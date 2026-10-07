@@ -5,7 +5,10 @@ on:
     # Run every 30 minutes from 6 AM to 11 PM BST (UTC+6)
     # That's midnight to 5 PM UTC
     - cron: '*/30 0-17 * * *'
-  workflow_dispatch:  # Allow manual triggers
+  workflow_dispatch:  # Allow manual 1-click trigger
+
+permissions:
+  contents: read
 
 jobs:
   monitor:
@@ -27,14 +30,13 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Download previous database
-        uses: dawidd6/action-download-artifact@v6
+      - name: Restore Database Cache
+        uses: actions/cache/restore@v4
         with:
-          name: jobs-db
-          path: storage/
-          search_artifacts: true
-          if_no_artifact_found: warn
-        continue-on-error: true
+          path: storage/jobs.db
+          key: jobs-db-${{ github.run_id }}
+          restore-keys: |
+            jobs-db-
 
       - name: Run job monitor
         env:
@@ -46,7 +48,14 @@ jobs:
           EMAIL_RECEIVER: ${{ secrets.EMAIL_RECEIVER }}
         run: python main.py
 
-      - name: Upload database artifact
+      - name: Save Database Cache
+        uses: actions/cache/save@v4
+        if: always()
+        with:
+          path: storage/jobs.db
+          key: jobs-db-${{ github.run_id }}
+
+      - name: Upload database backup artifact
         uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -55,7 +64,7 @@ jobs:
           retention-days: 90
           overwrite: true
 
-      - name: Upload logs
+      - name: Upload run logs
         uses: actions/upload-artifact@v4
         if: always()
         with:
