@@ -39,6 +39,20 @@ from main import scrape_all_sources, analyze_new_jobs, send_notifications
 db = Database()
 
 
+async def send_msg(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str, disable_preview: bool = False):
+    """Safely send message directly to the chat without reply_to_message_id errors."""
+    try:
+        chat_id = update.effective_chat.id if update.effective_chat else update.message.chat_id
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=text,
+            parse_mode=ParseMode.HTML,
+            disable_web_page_preview=disable_preview,
+        )
+    except Exception as e:
+        logger.error(f"Failed to send bot response: {e}")
+
+
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /start command."""
     welcome = (
@@ -53,7 +67,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• /help — Show this help message\n\n"
         "🤖 <i>New jobs are automatically announced here the moment they appear!</i>"
     )
-    await update.message.reply_text(welcome, parse_mode=ParseMode.HTML)
+    await send_msg(update, context, welcome)
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -65,7 +79,7 @@ async def latest_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /latest command — show recent jobs."""
     recent_jobs = db.get_recent_jobs(limit=5)
     if not recent_jobs:
-        await update.message.reply_text("📭 No jobs found in database yet.")
+        await send_msg(update, context, "📭 No jobs found in database yet.")
         return
 
     lines = ["🏦 <b>Latest Bank Job Postings:</b>\n"]
@@ -84,20 +98,20 @@ async def latest_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f'   🔗 <a href="{html.escape(url)}">View / Apply</a>\n'
         )
 
-    await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.HTML, disable_web_page_preview=True)
+    await send_msg(update, context, "\n".join(lines), disable_preview=True)
 
 
 async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /search <keyword> command."""
     if not context.args:
-        await update.message.reply_text(
+        await send_msg(
+            update,
+            context,
             "⚠️ Please specify a keyword to search.\nExample: <code>/search Officer</code> or <code>/search IT</code>",
-            parse_mode=ParseMode.HTML,
         )
         return
 
     keyword = " ".join(context.args).strip()
-    # Query database for matching titles or organizations
     with db.get_connection() as conn:
         cursor = conn.cursor()
         cursor.execute(
@@ -111,7 +125,7 @@ async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         matches = [dict(row) for row in cursor.fetchall()]
 
     if not matches:
-        await update.message.reply_text(f"🔍 No jobs found matching '<b>{html.escape(keyword)}</b>'.", parse_mode=ParseMode.HTML)
+        await send_msg(update, context, f"🔍 No jobs found matching '<b>{html.escape(keyword)}</b>'.")
         return
 
     lines = [f"🔍 <b>Search results for '{html.escape(keyword)}':</b>\n"]
@@ -125,7 +139,7 @@ async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f'   🔗 <a href="{html.escape(url)}">Apply</a>\n'
         )
 
-    await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.HTML, disable_web_page_preview=True)
+    await send_msg(update, context, "\n".join(lines), disable_preview=True)
 
 
 async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -142,18 +156,25 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"• <b>New Jobs Discovered:</b> {scrape_stats.get('total_new_jobs', 0)}\n\n"
         "🤖 <i>Status: Active and monitoring</i>"
     )
-    await update.message.reply_text(stats_msg, parse_mode=ParseMode.HTML)
+    await send_msg(update, context, stats_msg)
 
 
 async def check_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /check command — run instant scrape."""
-    status_msg = await update.message.reply_text("⏳ <i>Running instant scrape across all banks... This may take ~30s.</i>", parse_mode=ParseMode.HTML)
+    """Handle /check command — run instant scrape in background thread."""
+    import asyncio
+    chat_id = update.effective_chat.id if update.effective_chat else update.message.chat_id
+    status_msg = await context.bot.send_message(
+        chat_id=chat_id,
+        text="⏳ <i>Scanning 25+ bank career pages... This will take ~20-30s in the background.</i>",
+        parse_mode=ParseMode.HTML,
+    )
 
     try:
-        new_jobs = scrape_all_sources(db)
+        # Run blocking scraper and AI in background thread so bot stays responsive
+        new_jobs = await asyncio.to_thread(scrape_all_sources, db)
         if new_jobs > 0:
-            analyze_new_jobs(db)
-            sent = send_notifications(db)
+            await asyncio.to_thread(analyze_new_jobs, db)
+            sent = await asyncio.to_thread(send_notifications, db)
             await status_msg.edit_text(f"✅ Scrape complete! Found <b>{new_jobs}</b> new jobs and sent <b>{sent}</b> notifications.", parse_mode=ParseMode.HTML)
         else:
             await status_msg.edit_text("✅ Scrape complete! No new jobs posted since last check.", parse_mode=ParseMode.HTML)
@@ -164,12 +185,25 @@ async def check_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def main():
     """Start interactive Telegram bot."""
+    import asyncio
+    try:
+        asyncio.get_event_loop()
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+
     if not TELEGRAM_BOT_TOKEN or "your_telegram" in TELEGRAM_BOT_TOKEN:
         print("❌ Error: TELEGRAM_BOT_TOKEN is not set in .env!")
         return
 
     print("🤖 Starting interactive Telegram bot server...")
-    app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+    # Enable concurrent_updates for immediate, parallel handling of all user commands
+    app = (
+        Application.builder()
+        .token(TELEGRAM_BOT_TOKEN)
+        .concurrent_updates(True)
+        .build()
+    )
 
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler("help", help_command))
@@ -178,9 +212,9 @@ def main():
     app.add_handler(CommandHandler("stats", stats_command))
     app.add_handler(CommandHandler("check", check_command))
 
-    print("✅ Bot is online and listening for Telegram commands!")
+    print("✅ Bot is online with instant response times!")
     print("👉 Send /help or /latest in your Telegram group.")
-    app.run_polling(drop_pending_updates=True)
+    app.run_polling(poll_interval=0.5, timeout=10, drop_pending_updates=True)
 
 
 if __name__ == "__main__":
