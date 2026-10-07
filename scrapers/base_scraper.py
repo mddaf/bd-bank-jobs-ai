@@ -76,11 +76,15 @@ class BaseScraper(ABC):
                 self._rate_limit()
 
                 logger.info(f"Fetching [{attempt}/{MAX_RETRIES}]: {url}")
+                import urllib3
+                urllib3.disable_warnings()
+
                 response = self.session.get(
                     url,
                     headers=self._get_headers(),
                     timeout=REQUEST_TIMEOUT,
                     allow_redirects=True,
+                    verify=False,
                 )
                 response.raise_for_status()
 

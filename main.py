@@ -46,6 +46,7 @@ from config.banks import get_enabled_sources, JOB_PORTALS
 from storage.database import Database
 from scrapers.career_page_scraper import CareerPageScraper
 from scrapers.bdjobs_scraper import BdjobsScraper
+from scrapers.bb_erecruitment_scraper import BBErecruitmentScraper
 from ai.job_analyzer import JobAnalyzer
 from ai.gemini_client import GeminiClient
 from notifiers.telegram_bot import TelegramNotifier
@@ -54,18 +55,50 @@ from notifiers.email_notifier import EmailNotifier
 
 def scrape_all_sources(db: Database) -> int:
     """
-    Scrape all enabled bank career pages and job portals.
+    Scrape all enabled bank career pages, Bangladesh Bank central portal, and job portals.
     Returns the number of NEW jobs found.
     """
     logger.info("=" * 60)
     logger.info("PHASE 1: SCRAPING ALL SOURCES")
     logger.info("=" * 60)
 
+    total_new = 0
+    total_found = 0
+
+    # ── 0. Automated Smart Cleanup of Expired Jobs ──
+    expired_removed = db.cleanup_expired_jobs()
+    if expired_removed > 0:
+        logger.info(f"🧹 Automated cleanup: purged {expired_removed} expired jobs from database before scrape.")
+
+    # ── 1. Scrape Bangladesh Bank Central e-Recruitment (BSCS) ──
+    logger.info("\n🏛️ Scraping Bangladesh Bank Central e-Recruitment (BSCS)...")
+    start_time = time.time()
+    try:
+        bb_scraper = BBErecruitmentScraper()
+        bb_jobs = bb_scraper.scrape_jobs()
+        new_count = 0
+        for job in bb_jobs:
+            job_id = db.insert_job(job)
+            if job_id is not None:
+                new_count += 1
+        duration = time.time() - start_time
+        total_found += len(bb_jobs)
+        total_new += new_count
+        db.log_scrape(
+            source="BB_BSCS",
+            source_url="https://erecruitment.bb.org.bd/onlineapp/joblist.php",
+            status="success",
+            jobs_found=len(bb_jobs),
+            new_jobs=new_count,
+            duration_seconds=duration,
+        )
+        logger.info(f"  ✅ BB e-Recruitment: {new_count} NEW jobs (of {len(bb_jobs)} found)")
+    except Exception as e:
+        logger.error(f"  ❌ BB e-Recruitment error: {e}")
+
     career_scraper = CareerPageScraper()
     bdjobs_scraper = BdjobsScraper()
     sources = get_enabled_sources()
-    total_new = 0
-    total_found = 0
 
     # ── Scrape direct career pages ──
     logger.info(f"\n📋 Scraping {len(sources)} bank career pages...")

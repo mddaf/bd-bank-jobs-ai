@@ -2,12 +2,13 @@
 Career Page Scraper
 =====================
 Scrapes direct career/job pages from bank and financial institution websites.
-Uses BeautifulSoup with multiple CSS selector fallbacks to handle
-the variety of HTML structures across different bank websites.
+Uses BeautifulSoup with strict validation to prevent false positives (governance,
+board members, navigation links) and ensure working links.
 """
 
 import re
 import logging
+from urllib.parse import urljoin, urlparse
 from bs4 import BeautifulSoup
 from scrapers.base_scraper import BaseScraper
 
@@ -16,85 +17,170 @@ logger = logging.getLogger(__name__)
 
 class CareerPageScraper(BaseScraper):
     """
-    Scraper for direct bank career pages.
-
-    Strategy:
-    1. Try the configured CSS selectors first
-    2. Fall back to intelligent auto-detection (links containing job-related keywords)
-    3. Extract whatever metadata is available (title, link, deadline)
+    Scraper for direct bank and financial institution career pages.
     """
 
-    # Keywords that indicate a link is likely a job posting
-    JOB_KEYWORDS = [
+    # Real job role keywords that denote an actual employment opening
+    JOB_ROLE_KEYWORDS = [
         "officer", "manager", "executive", "analyst", "teller",
-        "assistant", "director", "head", "specialist", "trainee",
-        "recruitment", "circular", "vacancy", "নিয়োগ", "বিজ্ঞপ্তি",
-        "পদ", "কর্মকর্তা", "নিয়োগ বিজ্ঞপ্তি", "পরীক্ষা",
-        "career", "job", "position", "hiring", "apply", "recruit",
+        "assistant", "specialist", "trainee", "associate", "intern",
+        "lead", "head of", "developer", "engineer", "clerk", "operator",
+        "cashier", "advisor", "consultant", "supervisor", "representative",
+        "নিয়োগ", "বিজ্ঞপ্তি", "পদ", "কর্মকর্তা", "সহকারী", "ব্যবস্থাপক",
     ]
 
-    # Keywords that indicate a link is NOT a job posting
-    EXCLUDE_KEYWORDS = [
-        "privacy", "cookie", "terms", "contact", "about",
-        "login", "register", "facebook", "twitter", "linkedin",
-        "instagram", "youtube", "home", "branch", "atm",
-        "product", "service", "loan", "deposit", "card",
-        "board of director", "board of directors", "executive committee",
-        "audit committee", "management committee", "shariah supervisory",
-        "shariah council", "annual report", "financial statement",
-        "investor relation", "tender", "procurement", "auction", "csr",
+    # Strictest exclusion keywords: NEVER treat these as jobs
+    STRICT_EXCLUDE_KEYWORDS = [
+        # Governance & Management
+        "board of director", "board of directors", "board member",
+        "managing director & ceo", "managing director's", "md & ceo", "md's speech",
+        "chairman", "chairman's message", "vice chairman", "executive committee",
+        "audit committee", "risk management committee", "nomination and remuneration",
+        "shariah supervisory", "shariah council", "independent director",
+        "shareholding director", "sponsor director", "management committee",
+        "senior management", "organogram", "code of conduct", "code of ethics",
+        "citizen charter", "whistle blower", "corporate governance",
+        # Generic corporate pages & compliance directories (personal contacts)
+        "annual report", "financial statement", "quarterly report", "balance sheet",
+        "investor relation", "csr activities", "csr", "press release", "news & event",
+        "news & events", "tender", "procurement", "e-tender", "auction",
+        "schedule of charges", "interest rate", "exchange rate", "foreign exchange",
+        "branch locator", "atm locator", "agent banking", "sub-branch",
+        "privacy policy", "terms of use", "terms & conditions", "disclaimer",
+        "cookie policy", "sitemap", "site map", "faq", "frequently asked questions",
+        "about us", "who we are", "contact us", "feedback", "complaint",
+        "information officer", "information officers", "designated officer", "rti officer",
+        "grs officer", "grievance redress", "focal point officer", "focal point",
+        "complaint officer", "right to information", "তথ্য কর্মকর্তা", "দায়িত্বপ্রাপ্ত কর্মকর্তা",
+        "অভিযোগ প্রতিকার", "সেবা প্রদান প্রতিশ্রুতি",
+        # Generic buttons/headings that are not specific job titles
+        "career", "careers", "career opportunity", "career opportunities",
+        "current opening", "current openings", "current vacancies", "vacancies",
+        "job opening", "job openings", "jobs", "job opportunity",
+        "join us", "work with us", "apply now", "view details", "read more",
+        "click here", "see more", "download", "download circular", "apply online",
     ]
 
     def parse(self, html: str, source_config: dict) -> list:
-        """
-        Parse career page HTML to extract job listings.
-
-        Uses a multi-strategy approach:
-        1. Configured CSS selectors
-        2. Table-based extraction
-        3. Link-based auto-detection with keyword matching
-        """
-        soup = BeautifulSoup(html, "html5lib")
+        """Parse career page HTML and extract genuine job postings."""
+        soup = BeautifulSoup(html, "html.parser")
         base_url = source_config.get("career_url", "")
         org_name = source_config.get("name", "Unknown")
         scrape_cfg = source_config.get("scrape_config", {})
 
         jobs = []
 
-        # Strategy 1: Try configured selectors
+        # Strategy 1: Configured selectors
         jobs = self._parse_with_selectors(soup, scrape_cfg, base_url, org_name, source_config)
 
-        # Strategy 2: If no results, try auto-detection
+        # Strategy 2: Structured fallback if configured selectors found nothing
         if not jobs:
-            logger.info(f"Configured selectors found nothing for {org_name}, trying auto-detection...")
+            logger.debug(f"Configured selectors found nothing for {org_name}, trying auto-detection...")
             jobs = self._auto_detect_jobs(soup, base_url, org_name, source_config)
 
-        # Deduplicate by URL within this scrape
+        # Deduplicate and validate
         seen_urls = set()
-        unique_jobs = []
-        for job in jobs:
-            if job["url"] not in seen_urls:
-                seen_urls.add(job["url"])
-                unique_jobs.append(job)
+        seen_titles = set()
+        valid_jobs = []
 
-        return unique_jobs
+        for job in jobs:
+            clean_title = job["title"].lower().strip()
+            clean_url = job["url"].strip()
+
+            if clean_url in seen_urls or clean_title in seen_titles:
+                continue
+
+            seen_urls.add(clean_url)
+            seen_titles.add(clean_title)
+            valid_jobs.append(job)
+
+        return valid_jobs
+
+    def _is_legitimate_job_title(self, title: str) -> bool:
+        """
+        Strict check to confirm this string is an actual job position,
+        not a person's name, corporate committee, product, or navigation header.
+        """
+        if not title or len(title) < 6:
+            return False
+
+        # Reject pure URLs, numbers, or emails
+        if title.startswith("http") or title.isdigit() or "@" in title:
+            return False
+
+        t_lower = title.lower()
+
+        # Check against strict exclusions
+        for exclude in self.STRICT_EXCLUDE_KEYWORDS:
+            if exclude in t_lower:
+                return False
+
+        # Additional product/service/governance exclusions
+        extra_excludes = [
+            "committee", "supervisory", "council", "internet banking", "family remit",
+            "medi remit", "edu remit", "remittance", "locator", "head office",
+            "deposit", "account", "fund transfer", "customer care", "bftn", "rtgs",
+        ]
+        for ex in extra_excludes:
+            if ex in t_lower:
+                return False
+
+        # Must have at least one job role keyword matching WHOLE word boundaries
+        for role in self.JOB_ROLE_KEYWORDS:
+            if re.search(r'\b' + re.escape(role) + r'\b', t_lower):
+                return True
+
+        return False
+
+    def _clean_and_validate_url(self, raw_url: str, base_url: str) -> str:
+        """Validate URL to ensure it is clickable, absolute, and not broken."""
+        if not raw_url:
+            return base_url
+
+        raw_url = raw_url.strip()
+
+        # Reject useless javascript or hash links
+        if raw_url.startswith(("javascript:void", "javascript:;", "javascript:void(0)")):
+            return base_url
+        if raw_url == "#" or raw_url.endswith("/#") or raw_url.endswith("#"):
+            return base_url
+
+        # Check if it's a javascript showpdf link
+        pdf_match = re.search(r'showpdf\("([^"]+)"', raw_url, re.IGNORECASE)
+        if pdf_match:
+            return urljoin(base_url, pdf_match.group(1).replace("../", ""))
+
+        # Convert to absolute URL
+        absolute = urljoin(base_url, raw_url)
+        parsed = urlparse(absolute)
+
+        # Must have valid scheme and network location
+        if parsed.scheme not in ("http", "https") or not parsed.netloc:
+            return base_url
+
+        # Reject if URL points directly to homepage root
+        if parsed.path in ("", "/") and not parsed.query:
+            return base_url
+
+        return absolute
 
     def _parse_with_selectors(self, soup: BeautifulSoup, scrape_cfg: dict,
                                base_url: str, org_name: str, source_config: dict) -> list:
-        """Try parsing using the configured CSS selectors."""
+        """Parse using configured CSS selectors."""
         jobs = []
         container_selector = scrape_cfg.get("job_container", "")
-
         if not container_selector:
             return jobs
 
-        # Try each selector in the comma-separated list
         containers = []
         for selector in container_selector.split(","):
             selector = selector.strip()
             if selector:
-                found = soup.select(selector)
-                containers.extend(found)
+                try:
+                    found = soup.select(selector)
+                    containers.extend(found)
+                except Exception:
+                    continue
 
         for container in containers:
             job = self._extract_job_from_element(
@@ -107,7 +193,7 @@ class CareerPageScraper(BaseScraper):
 
     def _extract_job_from_element(self, element, scrape_cfg: dict,
                                    base_url: str, org_name: str, source_config: dict) -> dict:
-        """Extract job information from a single HTML element."""
+        """Extract job details from a single HTML element."""
         # Extract title
         title = ""
         title_selectors = scrape_cfg.get("title_selector", "").split(",")
@@ -120,50 +206,47 @@ class CareerPageScraper(BaseScraper):
                     if title:
                         break
 
-        # If no title found from selectors, try the element's text
         if not title:
             title = element.get_text(strip=True)
 
+        title = self._clean_text(title)
+        if not self._is_legitimate_job_title(title):
+            return None
+
         # Extract link
-        url = ""
+        raw_href = ""
         link_el = element.select_one("a[href]")
         if link_el:
-            url = self.make_absolute_url(base_url, link_el.get("href", ""))
-        else:
-            # Check if element itself is a link
-            if element.name == "a" and element.get("href"):
-                url = self.make_absolute_url(base_url, element["href"])
+            raw_href = link_el.get("href", "")
+        elif element.name == "a" and element.get("href"):
+            raw_href = element["href"]
+
+        url = self._clean_and_validate_url(raw_href, base_url)
 
         # Extract deadline
-        deadline = ""
+        deadline = None
         deadline_selectors = scrape_cfg.get("deadline_selector", "").split(",")
         for sel in deadline_selectors:
             sel = sel.strip()
             if sel:
                 deadline_el = element.select_one(sel)
                 if deadline_el:
-                    deadline = deadline_el.get_text(strip=True)
-                    if deadline:
+                    deadline_text = self._clean_text(deadline_el.get_text(strip=True))
+                    if deadline_text:
+                        deadline = deadline_text
                         break
 
-        # Validate: must have at least a title and URL
-        if not title or len(title) < 3:
-            return None
-        if not url or url == base_url:
-            return None
+        if not deadline:
+            deadline = self._find_nearby_deadline(element)
 
-        # Filter out non-job links
-        title_lower = title.lower()
-        if any(kw in title_lower for kw in self.EXCLUDE_KEYWORDS):
-            if not any(kw in title_lower for kw in self.JOB_KEYWORDS):
-                return None
+        desc = self._clean_text(element.get_text(" ", strip=True))[:500]
 
         return {
-            "title": self._clean_text(title),
+            "title": title,
             "organization": org_name,
             "url": url,
-            "deadline": self._clean_text(deadline) if deadline else None,
-            "description": self._clean_text(element.get_text(strip=True))[:500],
+            "deadline": deadline,
+            "description": desc,
             "raw_html": str(element)[:2000],
             "source": source_config.get("short_name", "UNKNOWN"),
             "source_type": source_config.get("type", "unknown"),
@@ -172,90 +255,72 @@ class CareerPageScraper(BaseScraper):
     def _auto_detect_jobs(self, soup: BeautifulSoup, base_url: str,
                            org_name: str, source_config: dict) -> list:
         """
-        Automatic job detection using keyword matching on links.
-        This is the fallback when configured selectors don't work.
+        Auto-detection fallback: search for links and cards that match
+        strict job role criteria.
         """
         jobs = []
 
-        # Find all links on the page
+        # Check links
         for link in soup.find_all("a", href=True):
-            text = link.get_text(strip=True)
+            text = self._clean_text(link.get_text(strip=True))
             href = link.get("href", "")
 
-            if not text or len(text) < 5:
+            if not self._is_legitimate_job_title(text):
                 continue
 
-            # Check if this link looks like a job posting
-            text_lower = text.lower()
-            href_lower = href.lower()
-            combined = f"{text_lower} {href_lower}"
+            url = self._clean_and_validate_url(href, base_url)
+            deadline = self._find_nearby_deadline(link)
 
-            is_job = any(kw in combined for kw in self.JOB_KEYWORDS)
-            is_excluded = any(kw in combined for kw in self.EXCLUDE_KEYWORDS)
+            jobs.append({
+                "title": text,
+                "organization": org_name,
+                "url": url,
+                "deadline": deadline,
+                "description": f"Position: {text} at {org_name}",
+                "raw_html": str(link.parent)[:2000] if link.parent else str(link),
+                "source": source_config.get("short_name", "UNKNOWN"),
+                "source_type": source_config.get("type", "unknown"),
+            })
 
-            if is_job and not is_excluded:
-                url = self.make_absolute_url(base_url, href)
+        # Check table rows
+        for tr in soup.find_all("tr"):
+            tds = tr.find_all("td")
+            if len(tds) >= 2:
+                title_cand = self._clean_text(tds[0].get_text(strip=True))
+                if self._is_legitimate_job_title(title_cand):
+                    link_el = tr.find("a", href=True)
+                    href = link_el.get("href", "") if link_el else ""
+                    url = self._clean_and_validate_url(href, base_url)
+                    deadline = self._find_nearby_deadline(tr)
 
-                # Try to find deadline near this link
-                deadline = self._find_nearby_deadline(link)
-
-                jobs.append({
-                    "title": self._clean_text(text),
-                    "organization": org_name,
-                    "url": url,
-                    "deadline": deadline,
-                    "description": None,
-                    "raw_html": str(link.parent)[:2000] if link.parent else str(link),
-                    "source": source_config.get("short_name", "UNKNOWN"),
-                    "source_type": source_config.get("type", "unknown"),
-                })
-
-        # Also check for PDF links (many banks post circulars as PDFs)
-        for link in soup.find_all("a", href=re.compile(r"\.pdf$", re.IGNORECASE)):
-            text = link.get_text(strip=True)
-            href = link.get("href", "")
-
-            if not text or len(text) < 5:
-                continue
-
-            text_lower = text.lower()
-            is_job = any(kw in text_lower for kw in self.JOB_KEYWORDS)
-
-            if is_job:
-                url = self.make_absolute_url(base_url, href)
-                jobs.append({
-                    "title": self._clean_text(text),
-                    "organization": org_name,
-                    "url": url,
-                    "deadline": self._find_nearby_deadline(link),
-                    "description": f"[PDF Circular] {text}",
-                    "raw_html": str(link.parent)[:2000] if link.parent else str(link),
-                    "source": source_config.get("short_name", "UNKNOWN"),
-                    "source_type": source_config.get("type", "unknown"),
-                })
+                    jobs.append({
+                        "title": title_cand,
+                        "organization": org_name,
+                        "url": url,
+                        "deadline": deadline,
+                        "description": self._clean_text(tr.get_text(" ", strip=True))[:500],
+                        "raw_html": str(tr)[:2000],
+                        "source": source_config.get("short_name", "UNKNOWN"),
+                        "source_type": source_config.get("type", "unknown"),
+                    })
 
         return jobs
 
     def _find_nearby_deadline(self, element) -> str:
-        """
-        Try to find deadline information near a link element.
-        Looks at siblings and parent elements for date-like text.
-        """
+        """Find deadline date pattern near the given element."""
         date_pattern = re.compile(
-            r'\d{1,2}[-/\.]\d{1,2}[-/\.]\d{2,4}'  # DD-MM-YYYY or similar
-            r'|\d{1,2}\s+(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\w*\s+\d{2,4}'  # DD Month YYYY
-            r'|(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\w*\s+\d{1,2},?\s+\d{2,4}',  # Month DD, YYYY
+            r'\d{1,2}[-/\.]\d{1,2}[-/\.]\d{2,4}'
+            r'|\d{1,2}\s+(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\w*\s+\d{2,4}'
+            r'|(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\w*\s+\d{1,2},?\s+\d{2,4}',
             re.IGNORECASE
         )
 
-        # Check siblings
         for sibling in element.find_next_siblings(limit=3):
             text = sibling.get_text(strip=True)
             match = date_pattern.search(text)
             if match:
                 return match.group()
 
-        # Check parent
         if element.parent:
             text = element.parent.get_text(strip=True)
             match = date_pattern.search(text)
@@ -265,10 +330,9 @@ class CareerPageScraper(BaseScraper):
         return None
 
     def _clean_text(self, text: str) -> str:
-        """Clean up extracted text — remove extra whitespace and control chars."""
+        """Clean extra whitespace and control chars."""
         if not text:
             return ""
-        # Remove control characters and excessive whitespace
         text = re.sub(r'[\r\n\t]+', ' ', text)
         text = re.sub(r'\s{2,}', ' ', text)
         return text.strip()

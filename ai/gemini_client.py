@@ -37,6 +37,7 @@ class GeminiClient:
         self.model = genai.GenerativeModel(self.current_model)
         self._request_times = []
         self._rate_limit = GEMINI_RATE_LIMIT_PER_MINUTE
+        self.quota_exhausted = False
         logger.info(f"Gemini client initialized with model: {self.current_model}")
 
     def _try_fallback_model(self) -> bool:
@@ -61,18 +62,14 @@ class GeminiClient:
 
         self._request_times.append(time.time())
 
-    def generate(self, prompt: str, max_retries: int = 3, response_mime_type: Optional[str] = None) -> Optional[str]:
+    def generate(self, prompt: str, max_retries: int = 2, response_mime_type: Optional[str] = None) -> Optional[str]:
         """
         Generate text using Gemini.
-
-        Args:
-            prompt: The text prompt to send
-            max_retries: Number of retry attempts
-            response_mime_type: Optional MIME type, e.g. 'application/json'
-
-        Returns:
-            Generated text string, or None on failure
+        Returns generated text string, or None if quota exhausted / failure.
         """
+        if self.quota_exhausted:
+            return None
+
         for attempt in range(1, max_retries + 1):
             try:
                 self._enforce_rate_limit()
@@ -104,14 +101,21 @@ class GeminiClient:
                     logger.warning(f"API daily quota reached for model {self.current_model}.")
                     if self._try_fallback_model():
                         continue
-                    logger.error("All Gemini model quotas exhausted. Falling back to local analysis.")
+                    self.quota_exhausted = True
+                    logger.warning("All Gemini model quotas reached. Switching to instant local analysis.")
+                    return None
+                elif "404" in error_msg or "not found" in error_msg.lower():
+                    if self._try_fallback_model():
+                        continue
+                    self.quota_exhausted = True
                     return None
                 elif "429" in error_msg or "rate" in error_msg.lower():
-                    wait = min(15 * attempt, 60)
-                    logger.info(f"Rate limited. Waiting {wait}s...")
-                    time.sleep(wait)
+                    if self._try_fallback_model():
+                        continue
+                    self.quota_exhausted = True
+                    return None
                 elif attempt < max_retries:
-                    time.sleep(2 ** attempt)
+                    time.sleep(1)
 
         return None
 

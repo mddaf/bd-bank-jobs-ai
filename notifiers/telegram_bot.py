@@ -14,10 +14,13 @@ Setup:
 import logging
 import asyncio
 import html
+import re
+from datetime import date
 from typing import Optional
 from telegram import Bot
 from telegram.constants import ParseMode
 from config.settings import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
+from utils.date_parser import parse_deadline
 
 logger = logging.getLogger(__name__)
 
@@ -53,44 +56,145 @@ class TelegramNotifier:
 
     def format_job_message(self, job: dict) -> str:
         """
-        Format a job posting into a beautiful Telegram HTML message.
+        Format a job posting into a modern, clean, and minimalistic Telegram card.
+        Contains all vital information without clutter.
         """
-        title = html.escape(job.get("title", "Unknown Position"))
-        org = html.escape(job.get("organization", "Unknown"))
-        category = html.escape(str(job.get("ai_category", "Banking")))
-        exp = html.escape(str(job.get("ai_experience_level", "Any")))
-        url = job.get("url", "")
+        title = (job.get("title") or "Banking Opportunity").strip()
+        org = (job.get("organization") or "Financial Institution").strip()
+        url = (job.get("url") or "").strip()
+        desc = (job.get("description") or "").strip()
+        source_type = (job.get("source_type") or "").lower()
+        score = float(job.get("ai_relevance_score", 0) or 0)
 
-        lines = [
-            "🏦 <b>New Bank Job Alert!</b>\n",
-            f"📌 <b>{title}</b>",
-            f"🏢 <b>Organization:</b> {org}",
-            f"📋 <b>Category:</b> {category} ({exp} level)",
+        # 1. Clean Title (remove button tags, extra braces, repetitive bank name)
+        clean_title = re.sub(r'\[\s*(?:view|pdf|download)?\s*circular\s*\]', '', title, flags=re.IGNORECASE)
+        clean_title = re.sub(r'\[\s*view\s*\]', '', clean_title, flags=re.IGNORECASE)
+        clean_title = re.sub(r'\s+(?:of|for)\s+[A-Za-z0-9\s\.\(\)\-]+Bank[A-Za-z0-9\s\.\(\)\-]*', '', clean_title, flags=re.IGNORECASE)
+        clean_title = re.sub(r'\s{2,}', ' ', clean_title).strip()
+
+        # 2. Sector styling & Subtitle
+        org_lower = org.lower()
+        if source_type == "state_owned" or any(k in org_lower for k in ["bangladesh bank", "bscs", "sonali", "janata", "agrani", "rupali", "basic", "krishi", "karmasangsthan", "probashi", "ansar"]):
+            icon = "🏛️"
+            sector_subtitle = "State-Owned Bank • Central Recruitment (BSCS)"
+        elif source_type == "islami" or any(k in org_lower for k in ["islami", "al-arafah", "shariah", "sibl", "sjibl"]):
+            icon = "🕌"
+            sector_subtitle = "Islamic Shariah-Compliant Commercial Bank"
+        elif source_type == "nbfi" or any(k in org_lower for k in ["finance", "idlc", "ipdc", "leasing"]):
+            icon = "💼"
+            sector_subtitle = "Non-Bank Financial Institution (NBFI)"
+        else:
+            icon = "🏢"
+            sector_subtitle = "Private Commercial Bank"
+
+        # 3. Extract Vacancies, Salary, Eligibility
+        vacancies = None
+        vac_m = re.search(r'Vacanc(?:ies|y):\s*(\d+\s*post[s]?)', desc, re.IGNORECASE)
+        if vac_m:
+            vacancies = vac_m.group(1).strip()
+        elif "post" in desc.lower():
+            p_m = re.search(r'(\d+\s*posts?)', desc, re.IGNORECASE)
+            if p_m:
+                vacancies = p_m.group(1).strip()
+
+        salary = None
+        sal_m = re.search(r'Salary\s*Scale:\s*([^|]+)', desc, re.IGNORECASE)
+        if sal_m:
+            salary = sal_m.group(1).strip()
+        elif job.get("estimated_salary_range"):
+            salary = str(job.get("estimated_salary_range"))
+
+        eligibility = None
+        req_m = re.search(r'Requirements:\s*([^|]+)', desc, re.IGNORECASE)
+        if req_m:
+            eligibility = req_m.group(1).strip()
+        elif job.get("ai_key_requirements"):
+            reqs = job.get("ai_key_requirements")
+            if isinstance(reqs, list) and reqs:
+                eligibility = reqs[0]
+            elif isinstance(reqs, str):
+                eligibility = reqs
+
+        # 4. Smart Deadline formatting with days remaining
+        raw_dl = job.get("deadline")
+        parsed_dl = parse_deadline(raw_dl) or parse_deadline(title)
+        if parsed_dl:
+            days_left = (parsed_dl - date.today()).days
+            dl_formatted = parsed_dl.strftime("%d %b %Y")
+            if days_left > 1:
+                deadline_display = f"{dl_formatted} <i>({days_left} days left)</i>"
+            elif days_left == 1:
+                deadline_display = f"{dl_formatted} <b>(Tomorrow!)</b>"
+            elif days_left == 0:
+                deadline_display = f"{dl_formatted} <b>(Ends Today!)</b>"
+            else:
+                deadline_display = dl_formatted
+        elif raw_dl:
+            deadline_display = html.escape(str(raw_dl))
+        else:
+            deadline_display = "Official Circular"
+
+        # 5. Build Structured Blockquote Card
+        card_items = []
+        if vacancies:
+            card_items.append(f"👥 <b>Vacancies:</b> {html.escape(vacancies)}")
+        if salary:
+            card_items.append(f"💰 <b>Salary:</b> {html.escape(salary[:55])}")
+        if eligibility:
+            card_items.append(f"🎓 <b>Req:</b> {html.escape(eligibility[:65])}")
+        card_items.append(f"📅 <b>Deadline:</b> {deadline_display}")
+        card_items.append(f"🎯 <b>Match:</b> {score:.0%} Verified")
+
+        card_block = "<blockquote>\n" + "\n".join(card_items) + "\n</blockquote>"
+
+        # 6. Concise Bilingual Summaries
+        summaries = []
+        summary_en = (job.get("ai_summary") or "").strip()
+        if summary_en and not any(k in summary_en.lower() for k in ["not an employment", "no summary", "not available"]):
+            summaries.append(f"📄 {html.escape(summary_en)}")
+
+        summary_bn = (job.get("ai_summary_bn") or "").strip()
+        if summary_bn and not any(k in summary_bn for k in ["কোনো চাকরির", "সারাংশ পাওয়া"]):
+            summaries.append(f"🇧🇩 {html.escape(summary_bn)}")
+
+        # 7. Action Links (Direct PDF and Apply Portal)
+        links = []
+        circ_match = re.search(r'Circular\s*PDF:\s*(https?://[^\s|]+)', desc)
+        apply_match = re.search(r'Apply\s*Portal:\s*(https?://[^\s|]+)', desc)
+
+        circ_url = circ_match.group(1).strip() if circ_match else None
+        apply_url = apply_match.group(1).strip() if apply_match else None
+
+        if not circ_url and (url.endswith(".pdf") or ".pdf#" in url or "erecruitment.bb.org.bd/career" in url):
+            circ_url = url
+
+        if circ_url and apply_url:
+            links.append(f'📄 <a href="{html.escape(circ_url)}"><b>Official Circular (PDF)</b></a>   •   👉 <a href="{html.escape(apply_url)}"><b>Apply Online ➔</b></a>')
+        elif circ_url:
+            links.append(f'📄 <a href="{html.escape(circ_url)}"><b>View Official Circular (PDF) ➔</b></a>')
+        elif url and url.startswith("http"):
+            links.append(f'👉 <a href="{html.escape(url)}"><b>Apply / View Official Circular ➔</b></a>')
+        else:
+            links.append('ℹ️ <i>Check official bank career portal.</i>')
+
+        # Assemble modern minimalistic message
+        parts = [
+            f"{icon} <b>{html.escape(org.upper())}</b>",
+            f"<i>{sector_subtitle}</i>",
+            "───────────────────────────",
+            f"💼 <b>{html.escape(clean_title)}</b>",
+            "",
+            card_block,
         ]
 
-        summary = job.get("ai_summary")
-        if summary:
-            lines.extend(["", "📝 <b>Summary:</b>", html.escape(summary)])
+        if summaries:
+            parts.append("")
+            parts.extend(summaries)
 
-        summary_bn = job.get("ai_summary_bn")
-        if summary_bn:
-            lines.extend(["", "📝 <b>সারাংশ:</b>", html.escape(summary_bn)])
+        parts.append("───────────────────────────")
+        parts.extend(links)
 
-        deadline = job.get("deadline")
-        if deadline:
-            lines.append(f"\n📅 <b>Deadline:</b> {html.escape(deadline)}")
-
-        score = float(job.get("ai_relevance_score", 0) or 0)
-        stars = "⭐" * min(5, max(1, round(score * 5)))
-        lines.append(f"🎯 <b>Relevance:</b> {stars} ({score:.0%})")
-
-        if url:
-            lines.append(f'\n🔗 <a href="{html.escape(url)}"><b>Apply / View Details →</b></a>')
-
-        org_tag = "".join(ch for ch in org if ch.isalnum())[:20]
-        lines.extend(["", f"#BankJob #Bangladesh #{org_tag}"])
-
-        return "\n".join(lines)
+        return "\n".join(parts)
 
     def format_daily_digest(self, jobs: list) -> str:
         """Format multiple jobs into a daily digest message."""
