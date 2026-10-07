@@ -185,30 +185,34 @@ async def is_admin(user_id: str, context: ContextTypes.DEFAULT_TYPE = None) -> b
 def is_authorized(update: Update) -> bool:
     """
     Check if update is authorized based on current mode and approval status.
-    - If in PUBLIC mode: all users can query.
-    - If in PRIVATE mode: requires group membership or approved bot usage.
+    - Groups: ONLY the official TELEGRAM_CHAT_ID group is allowed. All other groups are blocked.
+    - 1-on-1 DMs:
+      - If in PUBLIC mode: all users can query.
+      - If in PRIVATE mode: requires approved bot usage or admin.
     """
+    if not update.effective_chat:
+        return False
+
+    chat_id = str(update.effective_chat.id)
+    chat_type = update.effective_chat.type  # 'private', 'group', 'supergroup'
+    user_id = str(update.effective_user.id) if update.effective_user else ""
+
+    # Group chats: strictly restricted to official group only under all circumstances
+    if chat_type in ["group", "supergroup"]:
+        return chat_id == str(TELEGRAM_CHAT_ID)
+
+    # 1-on-1 Private DMs:
     mode = db.get_access_mode()
     if mode == "public":
         return True
 
-    if not update.effective_chat:
-        return False
-    chat_id = str(update.effective_chat.id)
-    user_id = str(update.effective_user.id) if update.effective_user else ""
-
-    # Official private group is always allowed
-    if chat_id == str(TELEGRAM_CHAT_ID):
-        return True
-
-    # Whitelisted admin in env
+    # In PRIVATE mode for 1-on-1:
     admin_env = os.getenv("TELEGRAM_ADMIN_IDS", "")
     if admin_env:
         for aid in admin_env.split(","):
             if aid.strip() and user_id == aid.strip():
                 return True
 
-    # Whitelisted user in database (bot usage approved by admin)
     if user_id and db.is_user_authorized(user_id):
         return True
 
@@ -625,29 +629,61 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def mode_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Admin command to view and toggle between PUBLIC and PRIVATE mode."""
+    """Admin command to view and toggle 1-on-1 Bot Usage between PUBLIC and PRIVATE mode."""
     user_id = str(update.effective_user.id) if update.effective_user else ""
     if not await is_admin(user_id, context):
         await send_msg(update, context, "⛔ Only administrators can configure bot privacy mode.")
         return
 
+    # Check for direct argument: /mode public or /mode private
+    if context.args:
+        arg = context.args[0].lower().strip()
+        new_mode = None
+        if arg in ["public", "open", "pub"]:
+            new_mode = "public"
+        elif arg in ["private", "restricted", "priv"]:
+            new_mode = "private"
+
+        if new_mode:
+            db.set_access_mode(new_mode)
+            try:
+                import export_web_data
+                export_web_data.export_all()
+            except Exception as e:
+                logger.error(f"Error updating jobs.json: {e}")
+
+            status_text = (
+                "🌐 <b>PUBLIC MODE ACTIVATED</b>\n"
+                "• <b>1-on-1 Bot Usage:</b> Open to all Telegram users without prior approval.\n"
+                "• <b>Private Group:</b> Unaffected (strictly invite-only with admin clearance).\n"
+                "• <b>Website:</b> Status indicator updated to <b>Public (Open)</b>."
+                if new_mode == "public" else
+                "🔒 <b>PRIVATE MODE ACTIVATED</b>\n"
+                "• <b>1-on-1 Bot Usage:</b> Restricted to approved users only. Outsiders must request approval.\n"
+                "• <b>Private Group:</b> Unaffected (strictly invite-only with admin clearance).\n"
+                "• <b>Website:</b> Status indicator updated to <b>Private (Approval Gated)</b>."
+            )
+            await send_msg(update, context, f"✅ <b>1-on-1 Access Mode Updated!</b>\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n{status_text}")
+            return
+
     current_mode = db.get_access_mode()
-    mode_text = "🔒 <b>PRIVATE</b> (Approval required for outsiders)" if current_mode == "private" else "🌐 <b>PUBLIC</b> (Open to everyone)"
+    mode_text = "🔒 <b>PRIVATE (Approval Required for 1-on-1 Bot DM)</b>" if current_mode == "private" else "🌐 <b>PUBLIC (Open 1-on-1 Bot DM)</b>"
 
     kb = [
         [
-            InlineKeyboardButton("🌐 Switch to PUBLIC Mode", callback_data="set_mode:public"),
-            InlineKeyboardButton("🔒 Switch to PRIVATE Mode", callback_data="set_mode:private"),
+            InlineKeyboardButton("🌐 Set 1-on-1 Bot: PUBLIC", callback_data="set_mode:public"),
+            InlineKeyboardButton("🔒 Set 1-on-1 Bot: PRIVATE", callback_data="set_mode:private"),
         ]
     ]
     msg = (
-        "⚙️ <b>Bot Access Mode Configuration</b>\n"
+        "⚙️ <b>1-on-1 Bot Usage Access Mode</b>\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"• <b>Current Mode:</b> {mode_text}\n\n"
-        "<b>Mode Overview:</b>\n"
-        "• <b>🔒 PRIVATE:</b> The bot only operates in the official group or for users with approved bot usage permissions.\n"
-        "• <b>🌐 PUBLIC:</b> Anyone on Telegram can query circulars without waiting for approval.\n\n"
-        "<i>Tap a button below to toggle the mode:</i>"
+        f"• <b>Current Active Mode:</b> {mode_text}\n"
+        "• <b>Private Group Access:</b> Strictly Private & Admin-Gated under all modes\n\n"
+        "<b>Usage Overview:</b>\n"
+        "• <b>🔒 PRIVATE:</b> Direct 1-on-1 bot usage requires admin approval. Website reflects Private status.\n"
+        "• <b>🌐 PUBLIC:</b> Anyone on Telegram can query circulars 1-on-1 immediately. Website reflects Public status.\n\n"
+        "<i>Tap a button below or type <code>/mode public</code> or <code>/mode private</code>:</i>"
     )
     await send_msg(update, context, msg, reply_markup=InlineKeyboardMarkup(kb))
 
@@ -897,19 +933,27 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
             return
 
         db.set_access_mode(new_mode)
-        await query.answer(f"✅ Access Mode set to {new_mode.upper()}!", show_alert=True)
+        try:
+            import export_web_data
+            export_web_data.export_all()
+        except Exception as e:
+            logger.error(f"Error updating jobs.json after mode change: {e}")
 
-        mode_text = "🔒 <b>PRIVATE</b> (Approval required for outsiders)" if new_mode == "private" else "🌐 <b>PUBLIC</b> (Open to everyone on Telegram)"
+        await query.answer(f"✅ 1-on-1 Bot Mode set to {new_mode.upper()}!", show_alert=True)
+
+        mode_text = "🔒 <b>PRIVATE</b> (Admin Approval Required for 1-on-1 DM)" if new_mode == "private" else "🌐 <b>PUBLIC</b> (Open to Everyone for 1-on-1 DM)"
         kb = [
             [
-                InlineKeyboardButton("🌐 Switch to PUBLIC Mode", callback_data="set_mode:public"),
-                InlineKeyboardButton("🔒 Switch to PRIVATE Mode", callback_data="set_mode:private"),
+                InlineKeyboardButton("🌐 Set 1-on-1 Bot: PUBLIC", callback_data="set_mode:public"),
+                InlineKeyboardButton("🔒 Set 1-on-1 Bot: PRIVATE", callback_data="set_mode:private"),
             ]
         ]
         msg = (
-            "⚙️ <b>Bot Access Mode Updated!</b>\n"
+            "⚙️ <b>1-on-1 Bot Access Mode Updated!</b>\n"
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
             f"• <b>Current Active Mode:</b> {mode_text}\n"
+            "• <b>Private Group:</b> Strictly Private & Admin-Gated\n"
+            f"• <b>Website Status:</b> Synchronized with <code>data/jobs.json</code>\n"
             f"• <b>Updated by:</b> @{query.from_user.username or query.from_user.first_name}\n\n"
             "<i>Tap below anytime to toggle mode:</i>"
         )

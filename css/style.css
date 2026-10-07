@@ -1021,50 +1021,67 @@ h4 {
   letter-spacing: 0.05em;
 }
 
-.tg-mode-switch-wrap {
-  display: flex;
+.tg-status-indicator {
+  display: inline-flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
+  padding: 6px 14px;
+  border-radius: var(--radius-full);
+  background: var(--bg-surface-elevated);
+  border: 1px solid var(--border-subtle);
+  font-size: 0.82rem;
+  color: var(--text-secondary);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+  transition: all var(--transition-normal);
 }
 
-.mode-switch-label {
-  font-size: 0.82rem;
-  font-weight: 600;
+.tg-status-indicator.status-private {
+  border-color: rgba(245, 158, 11, 0.35);
+  background: rgba(245, 158, 11, 0.08);
+}
+
+.tg-status-indicator.status-public {
+  border-color: rgba(16, 185, 129, 0.35);
+  background: rgba(16, 185, 129, 0.08);
+}
+
+.status-pulse-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  display: inline-block;
+  background: #f59e0b;
+  box-shadow: 0 0 8px rgba(245, 158, 11, 0.8);
+  animation: status-dot-pulse 2s infinite ease-in-out;
+}
+
+.status-public .status-pulse-dot {
+  background: #10b981;
+  box-shadow: 0 0 8px rgba(16, 185, 129, 0.8);
+}
+
+@keyframes status-dot-pulse {
+  0% { transform: scale(0.95); opacity: 0.8; }
+  50% { transform: scale(1.2); opacity: 1; }
+  100% { transform: scale(0.95); opacity: 0.8; }
+}
+
+.status-indicator-label {
+  font-weight: 500;
   color: var(--text-muted);
 }
 
-.tg-mode-switch {
-  display: inline-flex;
-  background: var(--bg-surface-elevated);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-full);
-  padding: 3px;
-  gap: 4px;
-}
-
-.tg-mode-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 6px 14px;
-  border-radius: var(--radius-full);
-  border: none;
-  background: transparent;
-  color: var(--text-secondary);
-  font-size: 0.82rem;
-  font-weight: 600;
-  cursor: pointer;
-  transition: all var(--transition-fast);
-}
-
-.tg-mode-btn:hover {
+.status-indicator-val {
+  font-weight: 700;
   color: var(--text-primary);
 }
 
-.tg-mode-btn.active {
-  background: var(--accent-emerald);
-  color: #ffffff;
-  box-shadow: 0 2px 8px rgba(16, 185, 129, 0.3);
+.status-private .status-indicator-val {
+  color: #f59e0b;
+}
+
+.status-public .status-indicator-val {
+  color: #10b981;
 }
 
 /* Dual Pathway Cards */

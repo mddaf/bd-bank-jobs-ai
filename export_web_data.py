@@ -110,6 +110,7 @@ def export_all():
         "total_active_jobs": len(export_jobs),
         "total_monitored_institutions": len(BANKS),
         "monitoring_frequency": "Every 30 Minutes",
+        "bot_access_mode": db.get_access_mode(),
         "jobs": export_jobs,
         "banks": export_banks,
     }

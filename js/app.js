@@ -73,6 +73,7 @@
 
       state.jobs = data.jobs || [];
       state.banks = data.banks || [];
+      state.botAccessMode = data.bot_access_mode || 'private';
 
       if (elements.statActiveJobs) elements.statActiveJobs.textContent = state.jobs.length;
       if (elements.statInstitutions) elements.statInstitutions.textContent = `${state.banks.length}+`;
@@ -80,6 +81,7 @@
       updateCategoryChipCounts();
       applyFilters();
       renderDirectory();
+      updateBotAccessModeUI(state.botAccessMode);
     } catch (err) {
       console.warn('Could not load data/jobs.json asynchronously, attempting embedded fallback...', err);
       loadEmbeddedFallback();
@@ -348,37 +350,6 @@
     if (elements.modalBackdrop) {
       elements.modalBackdrop.addEventListener('click', (e) => {
         if (e.target === elements.modalBackdrop) closeModal();
-      });
-    }
-
-    // Telegram Mode Switcher (Private vs Public)
-    const modeSwitch = document.getElementById('tg-mode-switch');
-    if (modeSwitch) {
-      modeSwitch.addEventListener('click', (e) => {
-        const btn = e.target.closest('.tg-mode-btn');
-        if (!btn) return;
-        const mode = btn.dataset.mode;
-        modeSwitch.querySelectorAll('.tg-mode-btn').forEach(b => {
-          b.classList.toggle('active', b === btn);
-          b.setAttribute('aria-selected', b === btn);
-        });
-
-        const privView = document.getElementById('tg-private-view');
-        const pubView = document.getElementById('tg-public-view');
-        const titleEl = document.getElementById('tg-view-title');
-        const descEl = document.getElementById('tg-view-desc');
-
-        if (mode === 'public') {
-          if (privView) privView.style.display = 'none';
-          if (pubView) pubView.style.display = 'block';
-          if (titleEl) titleEl.textContent = 'Public Access Telegram Intelligence';
-          if (descEl) descEl.textContent = 'Public mode is open to everyone. Anyone can query the bot in personal direct chat or group without prior admin approval.';
-        } else {
-          if (privView) privView.style.display = 'block';
-          if (pubView) pubView.style.display = 'none';
-          if (titleEl) titleEl.textContent = 'Real-Time Financial Sector Alerts & Bot Queries';
-          if (descEl) descEl.textContent = 'Connected directly to our autonomous 30-minute scraping daemon monitoring Bangladesh Bank BSCS and 105+ financial institutions. Instant chat recovery with /fetchall anytime!';
-        }
       });
     }
 
@@ -749,6 +720,64 @@
     if (!backdrop) return;
     backdrop.style.display = 'none';
     document.body.style.overflow = '';
+  }
+
+  /**
+   * Dynamically reflect Telegram Bot Access Mode (controlled by admin via /mode)
+   */
+  function updateBotAccessModeUI(mode) {
+    const isPublic = (mode === 'public');
+    const indicator = document.getElementById('tg-status-indicator');
+    const valEl = document.getElementById('tg-status-val');
+    const badgeBot = document.getElementById('pathway-badge-bot');
+    const descBot = document.getElementById('pathway-desc-bot');
+    const actionWrap = document.getElementById('pathway-action-bot-wrap');
+
+    if (indicator) {
+      indicator.classList.toggle('status-public', isPublic);
+      indicator.classList.toggle('status-private', !isPublic);
+    }
+
+    if (valEl) {
+      valEl.textContent = isPublic 
+        ? '🌐 Public (Open to Everyone)' 
+        : '🔒 Private (Admin Approval Required)';
+    }
+
+    if (badgeBot) {
+      badgeBot.textContent = isPublic 
+        ? 'DIRECT 1-ON-1 DM • OPEN TO ALL' 
+        : 'DIRECT 1-ON-1 DM • APPROVAL GATED';
+    }
+
+    if (descBot) {
+      descBot.innerHTML = isPublic
+        ? '1-on-1 private bot queries are currently <strong>publicly open</strong> to all Telegram users! Query <code>/latest</code>, <code>/categories</code>, and <code>/search</code> without waiting for admin approval.'
+        : 'Prefer direct personal queries? Request permission to use the bot in 1-on-1 private chat. Query <code>/latest</code>, <code>/categories</code>, and <code>/search</code> without notifications from other members.';
+    }
+
+    if (actionWrap) {
+      if (isPublic) {
+        actionWrap.innerHTML = `
+          <a href="https://t.me/BDBankJobMonitorBot" target="_blank" rel="noopener noreferrer" class="btn btn-primary" id="bot-action-btn">
+            <span>🚀 Start 1-on-1 Bot Chat</span>
+          </a>
+        `;
+      } else {
+        actionWrap.innerHTML = `
+          <button class="btn btn-primary private-invite-trigger" id="bot-action-btn" data-target-tab="bot">
+            <span>🤖 Request Bot Usage Access</span>
+          </button>
+        `;
+        const btn = document.getElementById('bot-action-btn');
+        if (btn) {
+          btn.addEventListener('click', (e) => {
+            e.preventDefault();
+            openInviteModal('bot');
+          });
+        }
+      }
+    }
   }
 
   /**
