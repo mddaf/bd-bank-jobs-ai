@@ -5,10 +5,11 @@ Handles all persistent storage for jobs, scrape logs, and deduplication.
 Uses SQLite for zero-config, file-based storage.
 """
 
+import os
 import sqlite3
 import logging
 from datetime import datetime
-from typing import Optional
+from typing import Optional, List, Dict
 from config.settings import DB_PATH
 
 logger = logging.getLogger(__name__)
@@ -75,11 +76,29 @@ class Database:
                     expired_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 );
 
+                CREATE TABLE IF NOT EXISTS settings (
+                    key TEXT PRIMARY KEY,
+                    value TEXT,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+
+                CREATE TABLE IF NOT EXISTS authorized_users (
+                    user_id TEXT PRIMARY KEY,
+                    username TEXT,
+                    full_name TEXT,
+                    access_type TEXT DEFAULT 'bot',
+                    approved_by TEXT,
+                    status TEXT DEFAULT 'approved',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+
                 CREATE INDEX IF NOT EXISTS idx_jobs_url ON jobs(url);
                 CREATE INDEX IF NOT EXISTS idx_jobs_notified ON jobs(notified);
                 CREATE INDEX IF NOT EXISTS idx_jobs_organization ON jobs(organization);
                 CREATE INDEX IF NOT EXISTS idx_jobs_first_seen ON jobs(first_seen_at);
                 CREATE INDEX IF NOT EXISTS idx_expired_jobs_url ON expired_jobs(url);
+                CREATE INDEX IF NOT EXISTS idx_authorized_users_status ON authorized_users(status);
             """)
 
             # Add fingerprint column and index to existing DB if missing
@@ -576,5 +595,140 @@ class Database:
             if row:
                 stats = dict(row)
             return stats
+        finally:
+            conn.close()
+
+    # ================================================================
+    # Settings & Access Control Operations
+    # ================================================================
+
+    def get_setting(self, key: str, default: Optional[str] = None) -> Optional[str]:
+        """Get a setting value by key."""
+        conn = self._get_connection()
+        try:
+            cursor = conn.execute("SELECT value FROM settings WHERE key = ?", (key,))
+            row = cursor.fetchone()
+            return row["value"] if row else default
+        finally:
+            conn.close()
+
+    def set_setting(self, key: str, value: str):
+        """Set a setting key-value pair."""
+        conn = self._get_connection()
+        try:
+            conn.execute("""
+                INSERT INTO settings (key, value, updated_at)
+                VALUES (?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(key) DO UPDATE SET
+                    value = excluded.value,
+                    updated_at = CURRENT_TIMESTAMP
+            """, (key, str(value)))
+            conn.commit()
+        finally:
+            conn.close()
+
+    def get_access_mode(self) -> str:
+        """Get current access mode ('public' or 'private'). Defaults to 'private'."""
+        mode = self.get_setting("access_mode")
+        if not mode:
+            mode = os.getenv("BOT_ACCESS_MODE", "private").lower()
+            self.set_setting("access_mode", mode)
+        return mode
+
+    def set_access_mode(self, mode: str) -> str:
+        """Toggle access mode to 'public' or 'private'."""
+        normalized = "public" if mode.lower() == "public" else "private"
+        self.set_setting("access_mode", normalized)
+        return normalized
+
+    def is_user_authorized(self, user_id: str) -> bool:
+        """Check if user_id is explicitly approved in authorized_users."""
+        conn = self._get_connection()
+        try:
+            cursor = conn.execute(
+                "SELECT status FROM authorized_users WHERE user_id = ? AND status = 'approved'",
+                (str(user_id),)
+            )
+            return cursor.fetchone() is not None
+        finally:
+            conn.close()
+
+    def authorize_user(self, user_id: str, username: Optional[str] = None,
+                       full_name: Optional[str] = None, access_type: str = "bot",
+                       approved_by: Optional[str] = None) -> bool:
+        """Grant authorization to a user."""
+        conn = self._get_connection()
+        try:
+            conn.execute("""
+                INSERT INTO authorized_users (
+                    user_id, username, full_name, access_type, approved_by, status, updated_at
+                ) VALUES (?, ?, ?, ?, ?, 'approved', CURRENT_TIMESTAMP)
+                ON CONFLICT(user_id) DO UPDATE SET
+                    username = coalesce(excluded.username, authorized_users.username),
+                    full_name = coalesce(excluded.full_name, authorized_users.full_name),
+                    access_type = excluded.access_type,
+                    approved_by = excluded.approved_by,
+                    status = 'approved',
+                    updated_at = CURRENT_TIMESTAMP
+            """, (str(user_id), username, full_name, access_type, approved_by))
+            conn.commit()
+            return True
+        finally:
+            conn.close()
+
+    def record_access_request(self, user_id: str, username: Optional[str] = None,
+                              full_name: Optional[str] = None, request_type: str = "bot") -> bool:
+        """Record or update a pending join or bot usage access request."""
+        conn = self._get_connection()
+        try:
+            conn.execute("""
+                INSERT INTO authorized_users (
+                    user_id, username, full_name, access_type, status, updated_at
+                ) VALUES (?, ?, ?, ?, 'pending', CURRENT_TIMESTAMP)
+                ON CONFLICT(user_id) DO UPDATE SET
+                    username = coalesce(excluded.username, authorized_users.username),
+                    full_name = coalesce(excluded.full_name, authorized_users.full_name),
+                    access_type = excluded.access_type,
+                    status = 'pending',
+                    updated_at = CURRENT_TIMESTAMP
+            """, (str(user_id), username, full_name, request_type))
+            conn.commit()
+            return True
+        finally:
+            conn.close()
+
+    def reject_user(self, user_id: str, rejected_by: Optional[str] = None) -> bool:
+        """Mark access request as rejected."""
+        conn = self._get_connection()
+        try:
+            conn.execute("""
+                UPDATE authorized_users
+                SET status = 'rejected', approved_by = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE user_id = ?
+            """, (rejected_by, str(user_id)))
+            conn.commit()
+            return True
+        finally:
+            conn.close()
+
+    def revoke_user(self, user_id: str) -> bool:
+        """Remove user authorization."""
+        conn = self._get_connection()
+        try:
+            conn.execute("DELETE FROM authorized_users WHERE user_id = ?", (str(user_id),))
+            conn.commit()
+            return True
+        finally:
+            conn.close()
+
+    def list_authorized_users(self, status: str = "approved") -> List[Dict]:
+        """List users by status (approved, pending, rejected)."""
+        conn = self._get_connection()
+        try:
+            cursor = conn.execute(
+                "SELECT * FROM authorized_users WHERE status = ? ORDER BY updated_at DESC",
+                (status,)
+            )
+            return [dict(row) for row in cursor.fetchall()]
         finally:
             conn.close()

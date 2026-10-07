@@ -33,12 +33,12 @@
     resetFiltersBtn: document.getElementById('reset-filters-btn'),
     statActiveJobs: document.getElementById('stat-active-jobs'),
     statInstitutions: document.getElementById('stat-institutions'),
-    
+
     // Directory
     directoryGrid: document.getElementById('directory-grid'),
     bankDirectorySearch: document.getElementById('bank-directory-search'),
     directoryTabs: document.getElementById('directory-tabs'),
-    
+
     // Modal
     modalBackdrop: document.getElementById('job-modal-backdrop'),
     modalCloseBtn: document.getElementById('modal-close-btn'),
@@ -47,7 +47,7 @@
     modalTags: document.getElementById('modal-tags'),
     modalBody: document.getElementById('modal-body'),
     modalFooter: document.getElementById('modal-footer'),
-    
+
     // Toast & Theme
     toast: document.getElementById('toast'),
     themeToggle: document.getElementById('theme-toggle'),
@@ -70,10 +70,10 @@
       const response = await fetch('data/jobs.json');
       if (!response.ok) throw new Error('Network error');
       const data = await response.json();
-      
+
       state.jobs = data.jobs || [];
       state.banks = data.banks || [];
-      
+
       if (elements.statActiveJobs) elements.statActiveJobs.textContent = state.jobs.length;
       if (elements.statInstitutions) elements.statInstitutions.textContent = `${state.banks.length}+`;
 
@@ -291,7 +291,7 @@
       elements.categoryChips.addEventListener('click', (e) => {
         const chip = e.target.closest('.chip-btn');
         if (!chip) return;
-        
+
         elements.categoryChips.querySelectorAll('.chip-btn').forEach(c => c.classList.remove('active'));
         chip.classList.add('active');
         state.activeCategory = chip.dataset.category || 'all';
@@ -306,12 +306,12 @@
         state.activeCategory = 'all';
         state.activeSector = 'all';
         state.activeSort = 'deadline_asc';
-        
+
         if (elements.searchInput) elements.searchInput.value = '';
         if (elements.clearSearchBtn) elements.clearSearchBtn.style.display = 'none';
         if (elements.sectorFilter) elements.sectorFilter.value = 'all';
         if (elements.sortSelect) elements.sortSelect.value = 'deadline_asc';
-        
+
         if (elements.categoryChips) {
           elements.categoryChips.querySelectorAll('.chip-btn').forEach(c => {
             c.classList.toggle('active', c.dataset.category === 'all');
@@ -341,7 +341,7 @@
       });
     }
 
-    // Modal Close
+    // Job Modal Close
     if (elements.modalCloseBtn) {
       elements.modalCloseBtn.addEventListener('click', closeModal);
     }
@@ -350,9 +350,93 @@
         if (e.target === elements.modalBackdrop) closeModal();
       });
     }
+
+    // Telegram Mode Switcher (Private vs Public)
+    const modeSwitch = document.getElementById('tg-mode-switch');
+    if (modeSwitch) {
+      modeSwitch.addEventListener('click', (e) => {
+        const btn = e.target.closest('.tg-mode-btn');
+        if (!btn) return;
+        const mode = btn.dataset.mode;
+        modeSwitch.querySelectorAll('.tg-mode-btn').forEach(b => {
+          b.classList.toggle('active', b === btn);
+          b.setAttribute('aria-selected', b === btn);
+        });
+
+        const privView = document.getElementById('tg-private-view');
+        const pubView = document.getElementById('tg-public-view');
+        const titleEl = document.getElementById('tg-view-title');
+        const descEl = document.getElementById('tg-view-desc');
+
+        if (mode === 'public') {
+          if (privView) privView.style.display = 'none';
+          if (pubView) pubView.style.display = 'block';
+          if (titleEl) titleEl.textContent = 'Public Access Telegram Intelligence';
+          if (descEl) descEl.textContent = 'Public mode is open to everyone. Anyone can query the bot in personal direct chat or group without prior admin approval.';
+        } else {
+          if (privView) privView.style.display = 'block';
+          if (pubView) pubView.style.display = 'none';
+          if (titleEl) titleEl.textContent = 'Real-Time Financial Sector Alerts & Bot Queries';
+          if (descEl) descEl.textContent = 'Connected directly to our autonomous 30-minute scraping daemon monitoring Bangladesh Bank BSCS and 105+ financial institutions. Instant chat recovery with /fetchall anytime!';
+        }
+      });
+    }
+
+    // Modal Tab Switcher (Bot Usage vs Group Invite)
+    const modalTabs = document.getElementById('modal-access-tabs');
+    if (modalTabs) {
+      modalTabs.addEventListener('click', (e) => {
+        const btn = e.target.closest('.modal-tab-btn');
+        if (!btn) return;
+        switchModalTab(btn.dataset.tab);
+      });
+    }
+
+    // Invite Modal Triggers
+    document.querySelectorAll('.private-invite-trigger').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        e.preventDefault();
+        const targetTab = btn.dataset.targetTab || 'bot';
+        openInviteModal(targetTab);
+      });
+    });
+
+    // Close buttons for Invite Modal
+    const inviteCloseBtn = document.getElementById('invite-modal-close-btn');
+    if (inviteCloseBtn) inviteCloseBtn.addEventListener('click', closeInviteModal);
+
+    const inviteDoneBtn = document.getElementById('invite-modal-done-btn');
+    if (inviteDoneBtn) inviteDoneBtn.addEventListener('click', closeInviteModal);
+
+    const inviteBackdrop = document.getElementById('invite-modal-backdrop');
+    if (inviteBackdrop) {
+      inviteBackdrop.addEventListener('click', (e) => {
+        if (e.target === inviteBackdrop) closeInviteModal();
+      });
+    }
+
+    // Copy template buttons
+    document.querySelectorAll('.copy-template-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const targetId = btn.dataset.target;
+        const textarea = document.getElementById(targetId);
+        if (textarea) {
+          navigator.clipboard.writeText(textarea.value)
+            .then(() => showToast('📋 Request message copied to clipboard!'))
+            .catch(() => showToast('Please copy message text manually.'));
+        }
+      });
+    });
+
     document.addEventListener('keydown', (e) => {
-      if (e.key === 'Escape' && elements.modalBackdrop.style.display !== 'none') {
-        closeModal();
+      if (e.key === 'Escape') {
+        if (elements.modalBackdrop && elements.modalBackdrop.style.display !== 'none') {
+          closeModal();
+        }
+        const inv = document.getElementById('invite-modal-backdrop');
+        if (inv && inv.style.display !== 'none') {
+          closeInviteModal();
+        }
       }
     });
 
@@ -636,6 +720,34 @@
   function closeModal() {
     if (!elements.modalBackdrop) return;
     elements.modalBackdrop.style.display = 'none';
+    document.body.style.overflow = '';
+  }
+
+  function switchModalTab(tabName) {
+    const modalTabs = document.getElementById('modal-access-tabs');
+    if (modalTabs) {
+      modalTabs.querySelectorAll('.modal-tab-btn').forEach(b => {
+        b.classList.toggle('active', b.dataset.tab === tabName);
+      });
+    }
+    const paneBot = document.getElementById('pane-tab-bot');
+    const paneGroup = document.getElementById('pane-tab-group');
+    if (paneBot) paneBot.style.display = tabName === 'bot' ? 'block' : 'none';
+    if (paneGroup) paneGroup.style.display = tabName === 'group' ? 'block' : 'none';
+  }
+
+  function openInviteModal(tab = 'bot') {
+    const backdrop = document.getElementById('invite-modal-backdrop');
+    if (!backdrop) return;
+    switchModalTab(tab);
+    backdrop.style.display = 'flex';
+    document.body.style.overflow = 'hidden';
+  }
+
+  function closeInviteModal() {
+    const backdrop = document.getElementById('invite-modal-backdrop');
+    if (!backdrop) return;
+    backdrop.style.display = 'none';
     document.body.style.overflow = '';
   }
 

@@ -82,9 +82,34 @@ The bot server (`bot_server.py`) operates 24/7 with a clean, deduplicated, and i
 • /scan          — Trigger on-demand live scrape across 105+ institutions with progress updates
 • /banks         — View complete directory of 105+ monitored institutions
 • /stats         — View database and monitoring metrics
+• /requestaccess — Request 1-on-1 bot usage permission or private group invite
+• /mode          — [Admin] Toggle between PUBLIC and PRIVATE access mode
+• /requests      — [Admin] View and review pending access requests
 • /help          — Command guide & instructions
 ───────────────────────────────────────────────────────────
 ```
+
+### 🔒 Dynamic Access Control: Public & Private Toggle
+
+The bot includes an **in-flight access control system** designed for privacy and flexibility:
+
+| Feature | 🔒 Private Mode (Default) | 🌐 Public Mode |
+| :--- | :--- | :--- |
+| **Command Access** | Gated to authorized users & group | Open to all Telegram users |
+| **Direct 1-on-1 Bot Usage** | Granted via `/requestaccess` approval | Instant access without approval |
+| **Group Membership** | Protected via admin invite links | Direct link if group is public |
+| **Toggle Command** | Admin runs `/mode` in chat | Admin runs `/mode` in chat |
+
+#### Two User Access Options (in Private Mode):
+1. **🤖 Bot Usage Permission (1-on-1 Direct Chat):**  
+   Users who do not wish to join a group can request direct bot access. Once approved by an admin, the user can run `/latest`, `/categories`, `/search`, and `/fetchall` in their personal DM without any group notifications.
+2. **👥 Private Group Membership:**  
+   Users requesting group alerts receive a single-use invite link generated on-the-fly by the bot once cleared by an admin.
+
+#### 🛡️ Telegram & BotFather Hardening:
+- **Block Unauthorized Groups:** Set `/setjoingroups` &rarr; `Disabled` in [@BotFather](https://t.me/BotFather) so strangers cannot add the bot to unauthorized groups.
+- **Privacy Mode:** Set `/setprivacy` &rarr; `Enabled` in [@BotFather](https://t.me/BotFather).
+- **Group Settings:** Set group type to **Private** and enable **Request Admin Approval** on invite links.
 
 ### 📱 Sample Minimalistic Telegram Alert Card:
 

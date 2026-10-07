@@ -18,11 +18,13 @@ Autonomous Features:
   - Broadcast Engine: automatically sends any new circulars to Telegram
 """
 
+import os
 import sys
 import io
 import html
 import asyncio
 import logging
+from datetime import datetime
 from telegram import (
     Update,
     BotCommand,
@@ -35,6 +37,7 @@ from telegram.ext import (
     CommandHandler,
     CallbackQueryHandler,
     MessageHandler,
+    ChatMemberHandler,
     ContextTypes,
     filters,
 )
@@ -142,8 +145,155 @@ async def send_msg(
         return None
 
 
+async def is_admin(user_id: str, context: ContextTypes.DEFAULT_TYPE = None) -> bool:
+    """Check if user_id is an administrator."""
+    if not user_id:
+        return False
+    user_str = str(user_id)
+    
+    # 1. Environment variable TELEGRAM_ADMIN_IDS
+    admin_env = os.getenv("TELEGRAM_ADMIN_IDS", "")
+    admin_set = {aid.strip() for aid in admin_env.split(",") if aid.strip()}
+    if user_str in admin_set:
+        return True
+
+    # 2. Match with personal TELEGRAM_CHAT_ID (if user chat)
+    if user_str == str(TELEGRAM_CHAT_ID):
+        return True
+
+    # 3. Database authorized_users with access_type='admin'
+    admin_users = [
+        u["user_id"] for u in db.list_authorized_users(status="approved")
+        if u.get("access_type") == "admin"
+    ]
+    if user_str in admin_users:
+        return True
+
+    # 4. Group administrators query
+    if context and TELEGRAM_CHAT_ID:
+        try:
+            admins = await context.bot.get_chat_administrators(int(TELEGRAM_CHAT_ID))
+            for a in admins:
+                if str(a.user.id) == user_str:
+                    return True
+        except Exception:
+            pass
+
+    return False
+
+
+def is_authorized(update: Update) -> bool:
+    """
+    Check if update is authorized based on current mode and approval status.
+    - If in PUBLIC mode: all users can query.
+    - If in PRIVATE mode: requires group membership or approved bot usage.
+    """
+    mode = db.get_access_mode()
+    if mode == "public":
+        return True
+
+    if not update.effective_chat:
+        return False
+    chat_id = str(update.effective_chat.id)
+    user_id = str(update.effective_user.id) if update.effective_user else ""
+
+    # Official private group is always allowed
+    if chat_id == str(TELEGRAM_CHAT_ID):
+        return True
+
+    # Whitelisted admin in env
+    admin_env = os.getenv("TELEGRAM_ADMIN_IDS", "")
+    if admin_env:
+        for aid in admin_env.split(","):
+            if aid.strip() and user_id == aid.strip():
+                return True
+
+    # Whitelisted user in database (bot usage approved by admin)
+    if user_id and db.is_user_authorized(user_id):
+        return True
+
+    return False
+
+
+def get_access_request_keyboard() -> InlineKeyboardMarkup:
+    """Keyboard allowing users to choose between Bot Usage Permission or Group Invite."""
+    kb = [
+        [
+            InlineKeyboardButton("🤖 Request Bot Usage Permission (1-on-1)", callback_data="req_access:bot"),
+        ],
+        [
+            InlineKeyboardButton("👥 Request Private Group Invite Link", callback_data="req_access:group"),
+        ],
+    ]
+    return InlineKeyboardMarkup(kb)
+
+
+async def enforce_private_access(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    """
+    Privacy & Access Gateway:
+    - In PUBLIC mode: permits all queries.
+    - In PRIVATE mode: permits authorized members/group. For others, offers
+      direct join request / bot usage permission request toggle.
+    """
+    if is_authorized(update):
+        return True
+
+    # Permit request access and admin callback buttons to pass through
+    if update.callback_query:
+        data = update.callback_query.data or ""
+        if (
+            data.startswith("req_access:")
+            or data.startswith("adm_app:")
+            or data.startswith("adm_rej:")
+            or data.startswith("set_mode:")
+        ):
+            return True
+        await update.callback_query.answer("🔒 Private Bot: Please tap below to request access permission.", show_alert=True)
+        return False
+
+    sender = update.effective_user.username if (update.effective_user and update.effective_user.username) else "unknown"
+    chat_id = update.effective_chat.id if update.effective_chat else "unknown"
+    user_id = str(update.effective_user.id) if update.effective_user else ""
+    logger.info(f"Unapproved access attempt: user=@{sender} (ID: {user_id}), chat_id={chat_id}")
+
+    prompt = (
+        "🔒 <b>BD Bank Jobs AI — Private Mode Active</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "This bot is currently in <b>Private Mode</b> to maintain high alert fidelity and prevent spam.\n\n"
+        "👉 <b>Choose an access option below to request permission:</b>\n\n"
+        "• <b>🤖 Bot Usage Permission:</b>\n"
+        "  Gain permission to use the bot directly in this 1-on-1 private chat <i>without joining any group</i>.\n\n"
+        "• <b>👥 Private Group Invite:</b>\n"
+        "  Receive an exclusive admin-approved invitation to join the official alert community for 30-min broadcasts.\n\n"
+        "<i>Tap an option below. Your request will be instantly forwarded to the administrator:</i>"
+    )
+
+    if update.message:
+        await update.message.reply_text(prompt, parse_mode=ParseMode.HTML, reply_markup=get_access_request_keyboard())
+    return False
+
+
+async def on_my_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Automatically leave any group that is not the approved TELEGRAM_CHAT_ID.
+    Prevents unauthorized groups from adding the bot.
+    """
+    chat = update.effective_chat
+    if not chat:
+        return
+    if str(chat.id) != str(TELEGRAM_CHAT_ID):
+        logger.warning(f"Bot added to unauthorized group '{chat.title}' ({chat.id}). Auto-leaving immediately...")
+        try:
+            await context.bot.leave_chat(chat.id)
+        except Exception as e:
+            logger.error(f"Error leaving unauthorized chat {chat.id}: {e}")
+
+
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /start command with interactive main menu."""
+    if not await enforce_private_access(update, context):
+        return
+
     welcome = (
         "🏦 <b>Bangladesh Bank & Financial Sector Job Monitor</b>\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
@@ -162,6 +312,9 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /help command with clear, deduplicated guide."""
+    if not await enforce_private_access(update, context):
+        return
+
     help_text = (
         "📋 <b>Bot Commands Guide:</b>\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
@@ -182,6 +335,9 @@ async def fetchall_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     Handle /fetchall (also /fetch_all, /resend_all, /all).
     Delivers ALL active circulars from the database to restore entire chat history!
     """
+    if not await enforce_private_access(update, context):
+        return
+
     db.cleanup_expired_jobs()
     db.cleanup_duplicates()
     all_jobs = db.get_all_jobs(limit=100, min_score=0.4)
@@ -217,6 +373,9 @@ async def fetchall_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def latest_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /latest command — show 5 most recent jobs with clean card layout."""
+    if not await enforce_private_access(update, context):
+        return
+
     db.cleanup_expired_jobs()
     db.cleanup_duplicates()
     recent_jobs = db.get_recent_jobs(limit=5)
@@ -247,6 +406,9 @@ async def latest_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def categories_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /categories command — interactive one-tap category menu."""
+    if not await enforce_private_access(update, context):
+        return
+
     db.cleanup_expired_jobs()
     db.cleanup_duplicates()
     text = (
@@ -259,6 +421,9 @@ async def categories_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /search [keyword] command with interactive chips if query omitted."""
+    if not await enforce_private_access(update, context):
+        return
+
     db.cleanup_expired_jobs()
     db.cleanup_duplicates()
 
@@ -308,6 +473,9 @@ async def execute_search(update: Update, context: ContextTypes.DEFAULT_TYPE, key
 
 async def scan_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /scan (or /check) — on-demand scrape with live progress indication."""
+    if not await enforce_private_access(update, context):
+        return
+
     chat_id = update.effective_chat.id if update.effective_chat else update.message.chat_id
     status_msg = await context.bot.send_message(
         chat_id=chat_id,
@@ -392,6 +560,9 @@ async def scan_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def banks_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /banks — list monitored banks and institutions."""
+    if not await enforce_private_access(update, context):
+        return
+
     text = (
         "🏦 <b>105+ Monitored Banks & Financial Institutions</b>\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
@@ -433,6 +604,9 @@ async def banks_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /stats command."""
+    if not await enforce_private_access(update, context):
+        return
+
     total_jobs = db.get_job_count()
     scrape_stats = db.get_scrape_stats()
 
@@ -450,13 +624,299 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await send_msg(update, context, stats_msg)
 
 
+async def mode_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Admin command to view and toggle between PUBLIC and PRIVATE mode."""
+    user_id = str(update.effective_user.id) if update.effective_user else ""
+    if not await is_admin(user_id, context):
+        await send_msg(update, context, "⛔ Only administrators can configure bot privacy mode.")
+        return
+
+    current_mode = db.get_access_mode()
+    mode_text = "🔒 <b>PRIVATE</b> (Approval required for outsiders)" if current_mode == "private" else "🌐 <b>PUBLIC</b> (Open to everyone)"
+
+    kb = [
+        [
+            InlineKeyboardButton("🌐 Switch to PUBLIC Mode", callback_data="set_mode:public"),
+            InlineKeyboardButton("🔒 Switch to PRIVATE Mode", callback_data="set_mode:private"),
+        ]
+    ]
+    msg = (
+        "⚙️ <b>Bot Access Mode Configuration</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"• <b>Current Mode:</b> {mode_text}\n\n"
+        "<b>Mode Overview:</b>\n"
+        "• <b>🔒 PRIVATE:</b> The bot only operates in the official group or for users with approved bot usage permissions.\n"
+        "• <b>🌐 PUBLIC:</b> Anyone on Telegram can query circulars without waiting for approval.\n\n"
+        "<i>Tap a button below to toggle the mode:</i>"
+    )
+    await send_msg(update, context, msg, reply_markup=InlineKeyboardMarkup(kb))
+
+
+async def requests_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Admin command to view and review pending access requests."""
+    user_id = str(update.effective_user.id) if update.effective_user else ""
+    if not await is_admin(user_id, context):
+        await send_msg(update, context, "⛔ Only administrators can view access requests.")
+        return
+
+    pending = db.list_authorized_users(status="pending")
+    if not pending:
+        await send_msg(update, context, "✅ <b>No pending access requests.</b> All requests have been reviewed.")
+        return
+
+    await send_msg(update, context, f"📋 <b>Found {len(pending)} Pending Access Requests:</b>")
+    for req in pending[:10]:
+        uid = req["user_id"]
+        uname = req.get("username") or "no_username"
+        fname = req.get("full_name") or "User"
+        atype = req.get("access_type") or "bot"
+        type_label = "Bot Usage Permission" if atype == "bot" else "Group Membership"
+
+        kb = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton(f"✅ Approve ({type_label})", callback_data=f"adm_app:{atype}:{uid}"),
+                InlineKeyboardButton("❌ Reject", callback_data=f"adm_rej:{uid}"),
+            ]
+        ])
+        card = (
+            f"👤 <b>{html.escape(fname)}</b> (@{uname})\n"
+            f"🆔 User ID: <code>{uid}</code>\n"
+            f"🎯 Request Type: <b>{type_label}</b>\n"
+            f"📅 Submitted: {req.get('updated_at', 'recently')}"
+        )
+        await send_msg(update, context, card, reply_markup=kb)
+        await asyncio.sleep(0.2)
+
+
+async def request_access_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Bring up the access request menu for unauthorized users."""
+    user_id = str(update.effective_user.id) if update.effective_user else ""
+    if db.is_user_authorized(user_id) or str(update.effective_chat.id) == str(TELEGRAM_CHAT_ID):
+        await send_msg(update, context, "✅ You already have authorized access to the BD Bank Jobs AI Bot!")
+        return
+
+    prompt = (
+        "🔒 <b>Request Access to BD Bank Jobs AI</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "Choose the type of access you are requesting:\n\n"
+        "• <b>🤖 Bot Usage Permission:</b> Direct access to query the bot in 1-on-1 private chat.\n"
+        "• <b>👥 Private Group Invite:</b> Join the official Telegram group for automatic 30-min broadcasts.\n\n"
+        "<i>Tap below to submit your request to the administrator:</i>"
+    )
+    await send_msg(update, context, prompt, reply_markup=get_access_request_keyboard())
+
+
 async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle interactive inline keyboard clicks."""
+    if not await enforce_private_access(update, context):
+        return
+
     query = update.callback_query
     await query.answer()
     data = query.data or ""
 
     if data == "menu:noop":
+        return
+
+    # ------------------------------------------------------------
+    # Access Request & Permission Callbacks
+    # ------------------------------------------------------------
+    if data.startswith("req_access:"):
+        req_type = data.split(":", 1)[1]  # "bot" or "group"
+        user = query.from_user
+        user_id = str(user.id)
+        username = user.username or ""
+        full_name = user.full_name or "Unknown User"
+
+        db.record_access_request(user_id, username, full_name, request_type=req_type)
+
+        if req_type == "bot":
+            user_confirm = (
+                "📨 <b>Bot Usage Permission Requested</b>\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                "Your request for <b>Direct Bot Usage Permission</b> has been forwarded to the administrator.\n\n"
+                "⏳ <i>You will receive a notification as soon as you are approved. Once approved, you can use all commands (/latest, /fetchall, /categories, /search) directly here!</i>"
+            )
+            admin_req_type = "🤖 <b>Bot Usage Only (1-on-1 DM, no group join needed)</b>"
+            admin_btn_text = "✅ Approve Bot Access"
+        else:
+            user_confirm = (
+                "📨 <b>Private Group Invite Requested</b>\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                "Your request to join the <b>Private Telegram Group</b> has been submitted to the administrator.\n\n"
+                "⏳ <i>You will receive a one-time verified invite link directly from this bot once approved.</i>"
+            )
+            admin_req_type = "👥 <b>Private Telegram Group Membership</b>"
+            admin_btn_text = "✅ Send Group Invite"
+
+        try:
+            await query.edit_message_text(user_confirm, parse_mode=ParseMode.HTML)
+        except Exception:
+            await query.message.reply_text(user_confirm, parse_mode=ParseMode.HTML)
+
+        # Notify administrator in the designated group
+        admin_kb = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton(admin_btn_text, callback_data=f"adm_app:{req_type}:{user_id}"),
+                InlineKeyboardButton("❌ Reject", callback_data=f"adm_rej:{user_id}"),
+            ]
+        ])
+        admin_alert = (
+            f"🔔 <b>New Access Request</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"👤 <b>User:</b> {html.escape(full_name)} (@{username or 'no_username'})\n"
+            f"🆔 <b>User ID:</b> <code>{user_id}</code>\n"
+            f"🎯 <b>Requested:</b> {admin_req_type}\n\n"
+            f"<i>Admins: Tap below to approve or reject:</i>"
+        )
+        try:
+            await context.bot.send_message(
+                chat_id=int(TELEGRAM_CHAT_ID),
+                text=admin_alert,
+                parse_mode=ParseMode.HTML,
+                reply_markup=admin_kb,
+            )
+        except Exception as e:
+            logger.error(f"Failed to forward access request to admin chat {TELEGRAM_CHAT_ID}: {e}")
+        return
+
+    # ------------------------------------------------------------
+    # Admin Approval / Rejection Callbacks
+    # ------------------------------------------------------------
+    if data.startswith("adm_app:"):
+        parts = data.split(":")
+        req_type = parts[1]
+        target_uid = parts[2]
+        admin_user = query.from_user
+        admin_uid = str(admin_user.id)
+
+        if not await is_admin(admin_uid, context):
+            await query.answer("⛔ Only administrators can approve access requests.", show_alert=True)
+            return
+
+        db.authorize_user(target_uid, access_type=req_type, approved_by=admin_uid)
+        admin_tag = f"@{admin_user.username}" if admin_user.username else admin_user.first_name
+
+        if req_type == "bot":
+            admin_summary = f"✅ <b>Approved for Bot Usage:</b> User <code>{target_uid}</code> by {admin_tag}."
+            user_msg = (
+                "🎉 <b>Bot Usage Permission Approved!</b>\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                "The administrator has granted you permission to use the BD Bank Jobs AI Bot!\n\n"
+                "You can now query circulars, run searches, and browse categories directly in this chat.\n\n"
+                "👇 <i>Get started below:</i>"
+            )
+            try:
+                await context.bot.send_message(
+                    chat_id=int(target_uid),
+                    text=user_msg,
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=get_category_keyboard(),
+                )
+            except Exception as e:
+                logger.warning(f"Could not deliver approval DM to user {target_uid}: {e}")
+        else:
+            invite_link = None
+            try:
+                invite = await context.bot.create_chat_invite_link(
+                    chat_id=int(TELEGRAM_CHAT_ID),
+                    member_limit=1,
+                    name=f"Invite for {target_uid}",
+                )
+                invite_link = invite.invite_link
+            except Exception as e:
+                logger.error(f"Could not generate chat invite link: {e}")
+
+            admin_summary = (
+                f"✅ <b>Group Invite Sent:</b> User <code>{target_uid}</code> by {admin_tag}\n"
+                f"🔗 Link: {invite_link or 'Error generating link'}"
+            )
+            user_msg = (
+                "🎉 <b>Group Membership Approved!</b>\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                "The administrator has approved your invitation to the private <b>BD Bank Jobs AI</b> group!\n\n"
+                f"🔗 <b>Your Exclusive Single-Use Invite Link:</b>\n"
+                f"{invite_link or 'Please contact admin for link'}\n\n"
+                "<i>Welcome! Continuous 30-minute circular broadcasts are active in the group.</i>"
+            )
+            try:
+                await context.bot.send_message(
+                    chat_id=int(target_uid),
+                    text=user_msg,
+                    parse_mode=ParseMode.HTML,
+                )
+            except Exception as e:
+                logger.warning(f"Could not deliver group invite DM to user {target_uid}: {e}")
+
+        try:
+            await query.edit_message_text(admin_summary, parse_mode=ParseMode.HTML)
+        except Exception:
+            await query.message.reply_text(admin_summary, parse_mode=ParseMode.HTML)
+        return
+
+    if data.startswith("adm_rej:"):
+        target_uid = data.split(":", 1)[1]
+        admin_user = query.from_user
+        admin_uid = str(admin_user.id)
+
+        if not await is_admin(admin_uid, context):
+            await query.answer("⛔ Only administrators can reject access requests.", show_alert=True)
+            return
+
+        db.reject_user(target_uid, rejected_by=admin_uid)
+        admin_tag = f"@{admin_user.username}" if admin_user.username else admin_user.first_name
+        admin_summary = f"❌ <b>Rejected:</b> User <code>{target_uid}</code> by {admin_tag}."
+
+        try:
+            await query.edit_message_text(admin_summary, parse_mode=ParseMode.HTML)
+        except Exception:
+            await query.message.reply_text(admin_summary, parse_mode=ParseMode.HTML)
+
+        try:
+            await context.bot.send_message(
+                chat_id=int(target_uid),
+                text=(
+                    "ℹ️ <b>Access Request Update</b>\n"
+                    "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                    "Your access request was reviewed by the administrator and could not be approved at this time."
+                ),
+                parse_mode=ParseMode.HTML,
+            )
+        except Exception:
+            pass
+        return
+
+    # ------------------------------------------------------------
+    # Admin Mode Toggle Callbacks
+    # ------------------------------------------------------------
+    if data.startswith("set_mode:"):
+        new_mode = data.split(":", 1)[1]
+        admin_uid = str(query.from_user.id)
+        if not await is_admin(admin_uid, context):
+            await query.answer("⛔ Only administrators can change bot access mode.", show_alert=True)
+            return
+
+        db.set_access_mode(new_mode)
+        await query.answer(f"✅ Access Mode set to {new_mode.upper()}!", show_alert=True)
+
+        mode_text = "🔒 <b>PRIVATE</b> (Approval required for outsiders)" if new_mode == "private" else "🌐 <b>PUBLIC</b> (Open to everyone on Telegram)"
+        kb = [
+            [
+                InlineKeyboardButton("🌐 Switch to PUBLIC Mode", callback_data="set_mode:public"),
+                InlineKeyboardButton("🔒 Switch to PRIVATE Mode", callback_data="set_mode:private"),
+            ]
+        ]
+        msg = (
+            "⚙️ <b>Bot Access Mode Updated!</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"• <b>Current Active Mode:</b> {mode_text}\n"
+            f"• <b>Updated by:</b> @{query.from_user.username or query.from_user.first_name}\n\n"
+            "<i>Tap below anytime to toggle mode:</i>"
+        )
+        try:
+            await query.edit_message_text(msg, parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(kb))
+        except Exception:
+            await query.message.reply_text(msg, parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(kb))
         return
 
     if data == "menu:fetchall":
@@ -524,6 +984,8 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
     When user types plain text (e.g. 'engineer', 'sonali bank', 'audit', 'officer'),
     automatically performs a search!
     """
+    if not await enforce_private_access(update, context):
+        return
     text = (update.message.text or "").strip()
     if not text or text.startswith("/"):
         return
@@ -623,6 +1085,9 @@ async def setup_bot_commands(application: Application):
         BotCommand("scan", "Live scan now with 4-step progress updates"),
         BotCommand("banks", "List all 105+ monitored banks & NBFIs"),
         BotCommand("stats", "View database & monitoring statistics"),
+        BotCommand("requestaccess", "Request bot usage or group invite"),
+        BotCommand("mode", "Admin: Toggle public / private access mode"),
+        BotCommand("requests", "Admin: View & approve pending access requests"),
         BotCommand("help", "Show help and command guide"),
     ]
     try:
@@ -674,6 +1139,11 @@ def main():
     app.add_handler(CommandHandler("check", scan_command))
     app.add_handler(CommandHandler("banks", banks_command))
     app.add_handler(CommandHandler("stats", stats_command))
+    app.add_handler(CommandHandler("mode", mode_command))
+    app.add_handler(CommandHandler("toggleprivacy", mode_command))
+    app.add_handler(CommandHandler("requests", requests_command))
+    app.add_handler(CommandHandler("requestaccess", request_access_command))
+    app.add_handler(CommandHandler("access", request_access_command))
 
     # Interactive callback query handler (inline buttons click)
     app.add_handler(CallbackQueryHandler(handle_callback_query))
@@ -681,7 +1151,10 @@ def main():
     # Natural text message handler (search any keyword without typing slashes)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_message))
 
-    print("✅ Bot is online with /fetchall, 30-min auto-monitor across ALL 105+ banks!")
+    # Auto-leave unauthorized groups (security safeguard)
+    app.add_handler(ChatMemberHandler(on_my_chat_member, ChatMemberHandler.MY_CHAT_MEMBER))
+
+    print("✅ Bot is online with dynamic Public/Private toggle & 30-min auto-monitor across ALL 105+ banks!")
     app.run_polling(poll_interval=0.5, timeout=10, drop_pending_updates=True)
 
 
