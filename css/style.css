@@ -1362,6 +1362,181 @@ h4 {
   border-top: 1px solid var(--border-subtle);
 }
 
+/* --------------------------------------------------------------------------
+   9b. Access Request & Invite Modal Elements
+   -------------------------------------------------------------------------- */
+.modal-tab-pane {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.invite-intro-box {
+  background: rgba(16, 185, 129, 0.08);
+  border: 1px solid rgba(16, 185, 129, 0.25);
+  border-radius: var(--radius-md);
+  padding: 14px 18px;
+  font-size: 0.9rem;
+  color: var(--text-primary);
+  line-height: 1.5;
+}
+
+.invite-step-card {
+  display: flex !important;
+  flex-direction: row !important;
+  align-items: flex-start !important;
+  gap: 16px !important;
+  background: var(--bg-surface-elevated);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  padding: 14px 18px !important;
+  transition: border-color var(--transition-fast);
+}
+
+.invite-step-card:hover {
+  border-color: rgba(16, 185, 129, 0.35);
+}
+
+.step-num {
+  width: 32px !important;
+  height: 32px !important;
+  min-width: 32px !important;
+  border-radius: 50% !important;
+  background: linear-gradient(135deg, #10b981 0%, #059669 100%) !important;
+  color: #ffffff !important;
+  font-weight: 700 !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  font-size: 0.88rem !important;
+  line-height: 1 !important;
+  flex-shrink: 0 !important;
+  box-shadow: 0 2px 8px rgba(16, 185, 129, 0.4) !important;
+}
+
+.step-info {
+  display: flex !important;
+  flex-direction: column !important;
+  gap: 4px !important;
+  flex: 1 !important;
+}
+
+.step-info h4 {
+  font-size: 0.96rem !important;
+  font-weight: 700 !important;
+  color: var(--text-primary) !important;
+  margin: 0 0 2px 0 !important;
+}
+
+.step-info p {
+  font-size: 0.86rem !important;
+  color: var(--text-secondary) !important;
+  line-height: 1.45 !important;
+  margin: 0 !important;
+}
+
+.step-info code {
+  background: rgba(16, 185, 129, 0.15);
+  color: var(--accent-emerald);
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-weight: 700;
+  font-size: 0.84rem;
+}
+
+/* Sample Request Message Field Box */
+.invite-copy-box {
+  display: flex !important;
+  flex-direction: column !important;
+  gap: 12px !important;
+  margin-top: 8px !important;
+  padding: 18px !important;
+  background: rgba(16, 185, 129, 0.05) !important;
+  border: 1px dashed rgba(16, 185, 129, 0.45) !important;
+  border-radius: var(--radius-lg) !important;
+  width: 100% !important;
+  box-sizing: border-box !important;
+}
+
+[data-theme="light"] .invite-copy-box {
+  background: #f8fafc !important;
+}
+
+.invite-copy-header {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: space-between !important;
+  gap: 10px !important;
+  flex-wrap: wrap !important;
+}
+
+.invite-copy-header label {
+  font-size: 0.86rem !important;
+  font-weight: 700 !important;
+  color: var(--accent-emerald) !important;
+  letter-spacing: 0.02em !important;
+  margin: 0 !important;
+  display: flex !important;
+  align-items: center !important;
+  gap: 6px !important;
+}
+
+.copy-hint {
+  font-size: 0.78rem !important;
+  color: var(--text-muted) !important;
+}
+
+.invite-textarea {
+  width: 100% !important;
+  max-width: 100% !important;
+  box-sizing: border-box !important;
+  display: block !important;
+  min-height: 72px !important;
+  padding: 12px 14px !important;
+  background: var(--bg-surface) !important;
+  border: 1px solid var(--border-subtle) !important;
+  border-radius: var(--radius-md) !important;
+  color: var(--text-primary) !important;
+  font-family: var(--font-body) !important;
+  font-size: 0.92rem !important;
+  line-height: 1.5 !important;
+  resize: vertical !important;
+  outline: none !important;
+  transition: border-color var(--transition-fast), box-shadow var(--transition-fast) !important;
+}
+
+.invite-textarea:focus {
+  border-color: var(--accent-emerald) !important;
+  box-shadow: 0 0 0 3px rgba(16, 185, 129, 0.2) !important;
+}
+
+.invite-copy-footer {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: flex-start !important;
+  gap: 12px !important;
+}
+
+.copy-template-btn {
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 8px !important;
+  padding: 8px 16px !important;
+  font-size: 0.85rem !important;
+  font-weight: 600 !important;
+  cursor: pointer !important;
+  background: var(--bg-surface-elevated) !important;
+  border: 1px solid var(--border-subtle) !important;
+  color: var(--text-primary) !important;
+  border-radius: var(--radius-md) !important;
+  transition: all var(--transition-fast) !important;
+}
+
+.copy-template-btn:hover {
+  border-color: var(--accent-emerald) !important;
+  color: var(--accent-emerald) !important;
+}
+
 /* Toast */
 .toast {
   position: fixed;
