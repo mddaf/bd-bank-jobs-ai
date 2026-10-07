@@ -2,17 +2,23 @@
 Interactive Telegram Bot Server
 ================================
 Features:
-  /start   - Welcome & guide
-  /help    - Complete list of commands
-  /latest  - 5 most recent banking circulars
-  /all     - Browse all jobs in database (paginated: /all [page])
-  /jobs    - Alias for /all
-  /search  - Search jobs by keyword (e.g., /search IT, /search Officer)
-  /filter  - Filter by sector (e.g., /filter govt, /filter private, /filter islami, /filter nbfi)
-  /banks   - View all 50+ monitored banks and institutions
-  /resend  - Resend latest job alert cards to the chat
-  /stats   - View database and monitoring statistics
-  /check   - Run live scan with real-time multi-step progress indicator
+  /start       - Welcome & interactive quick menu
+  /categories  - One-tap category browser with live counts (Govt, IT, Engineering, Law, etc.)
+  /search      - Instant search or quick-search chips
+  /filter      - Filter by sector or discipline
+  /latest      - 5 most recent banking circulars
+  /all         - Browse all jobs in database with interactive pagination buttons
+  /banks       - View all 105+ monitored banks and institutions
+  /resend      - Re-broadcast latest job alert cards to the chat
+  /stats       - View database and monitoring statistics
+  /check       - Run live scan with real-time multi-step progress indicator
+  /help        - Complete guide
+
+Interactive Features:
+  - Inline buttons for categories, sectors, and cadres
+  - Interactive pagination buttons for browsing all jobs
+  - Quick-search chips for one-tap searching
+  - Natural text search: type any job keyword directly into chat without slashes!
 """
 
 import sys
@@ -20,9 +26,21 @@ import io
 import html
 import asyncio
 import logging
-from telegram import Update, BotCommand
+from telegram import (
+    Update,
+    BotCommand,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+)
 from telegram.constants import ParseMode
-from telegram.ext import Application, CommandHandler, ContextTypes
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    CallbackQueryHandler,
+    MessageHandler,
+    ContextTypes,
+    filters,
+)
 
 # Force UTF-8 encoding on Windows console
 if sys.stdout.encoding != "utf-8":
@@ -48,7 +66,89 @@ db = Database()
 telegram_notifier = TelegramNotifier()
 
 
-async def send_msg(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str, disable_preview: bool = True):
+def get_category_keyboard() -> InlineKeyboardMarkup:
+    """Build interactive one-tap category selection keyboard with live counts."""
+    counts = db.get_category_counts()
+    kb = [
+        [
+            InlineKeyboardButton(f"🏛️ Govt & Central ({counts.get('govt', 0)})", callback_data="cat:govt"),
+            InlineKeyboardButton(f"⚙️ Engineering ({counts.get('engineering', 0)})", callback_data="cat:engineering"),
+        ],
+        [
+            InlineKeyboardButton(f"💻 IT & Systems ({counts.get('it', 0)})", callback_data="cat:it"),
+            InlineKeyboardButton(f"⚖️ Law & Legal ({counts.get('law', 0)})", callback_data="cat:law"),
+        ],
+        [
+            InlineKeyboardButton(f"📊 Audit & Accounts ({counts.get('audit', 0)})", callback_data="cat:audit"),
+            InlineKeyboardButton(f"📈 Financial Analyst ({counts.get('analyst', 0)})", callback_data="cat:analyst"),
+        ],
+        [
+            InlineKeyboardButton(f"🏢 Private Banks ({counts.get('private', 0)})", callback_data="cat:private"),
+            InlineKeyboardButton(f"🕌 Islami Banks ({counts.get('islami', 0)})", callback_data="cat:islami"),
+        ],
+        [
+            InlineKeyboardButton(f"💼 NBFIs & Leasing ({counts.get('nbfi', 0)})", callback_data="cat:nbfi"),
+            InlineKeyboardButton(f"👔 Officers & Cadre ({counts.get('officer', 0)})", callback_data="cat:officer"),
+        ],
+        [
+            InlineKeyboardButton(f"📚 All Active Jobs ({counts.get('total', 0)})", callback_data="page:1"),
+            InlineKeyboardButton("🔍 Quick Search", callback_data="menu:search"),
+        ],
+    ]
+    return InlineKeyboardMarkup(kb)
+
+
+def get_search_keyboard() -> InlineKeyboardMarkup:
+    """Build quick-search chips for instant one-tap searches."""
+    kb = [
+        [
+            InlineKeyboardButton("🔍 Engineer", callback_data="qsearch:engineer"),
+            InlineKeyboardButton("🔍 Officer", callback_data="qsearch:officer"),
+            InlineKeyboardButton("🔍 IT / System", callback_data="qsearch:system"),
+        ],
+        [
+            InlineKeyboardButton("🔍 Audit", callback_data="qsearch:audit"),
+            InlineKeyboardButton("🔍 Law", callback_data="qsearch:law"),
+            InlineKeyboardButton("🔍 Analyst", callback_data="qsearch:analyst"),
+        ],
+        [
+            InlineKeyboardButton("🔍 Sonali Bank", callback_data="qsearch:sonali"),
+            InlineKeyboardButton("🔍 Agrani Bank", callback_data="qsearch:agrani"),
+            InlineKeyboardButton("🔍 Rupali Bank", callback_data="qsearch:rupali"),
+        ],
+        [
+            InlineKeyboardButton("📂 Browse Categories", callback_data="menu:categories"),
+            InlineKeyboardButton("📚 Browse All Jobs", callback_data="page:1"),
+        ],
+    ]
+    return InlineKeyboardMarkup(kb)
+
+
+def get_pagination_keyboard(page: int, total_pages: int) -> InlineKeyboardMarkup:
+    """Build interactive next/prev pagination buttons."""
+    buttons = []
+    nav_row = []
+    if page > 1:
+        nav_row.append(InlineKeyboardButton("◀️ Previous", callback_data=f"page:{page - 1}"))
+    nav_row.append(InlineKeyboardButton(f"📄 {page} / {total_pages}", callback_data="menu:noop"))
+    if page < total_pages:
+        nav_row.append(InlineKeyboardButton("Next ▶️", callback_data=f"page:{page + 1}"))
+    buttons.append(nav_row)
+
+    buttons.append([
+        InlineKeyboardButton("📂 Categories", callback_data="menu:categories"),
+        InlineKeyboardButton("🔍 Search", callback_data="menu:search"),
+    ])
+    return InlineKeyboardMarkup(buttons)
+
+
+async def send_msg(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    text: str,
+    disable_preview: bool = True,
+    reply_markup: InlineKeyboardMarkup = None,
+):
     """Safely send message directly to the chat without reply_to_message_id errors."""
     try:
         chat_id = update.effective_chat.id if update.effective_chat else update.message.chat_id
@@ -57,6 +157,7 @@ async def send_msg(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str
             text=text,
             parse_mode=ParseMode.HTML,
             disable_web_page_preview=disable_preview,
+            reply_markup=reply_markup,
         )
     except Exception as e:
         logger.error(f"Failed to send bot response: {e}")
@@ -64,7 +165,7 @@ async def send_msg(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str
 
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /start command."""
+    """Handle /start command with interactive main menu."""
     welcome = (
         "🏦 <b>Bangladesh Bank & Financial Sector Job Monitor</b>\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
@@ -75,24 +176,40 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• 🌍 <b>Foreign & Digital (11):</b> Standard Chartered, HSBC, Woori, Nagad Digital, Kori Digital, etc.\n"
         "• 💼 <b>NBFIs (35):</b> IDLC, IPDC, LankaBangla, DBH, United Finance, IDCOL, etc.\n"
         "• 🌐 <b>Portals:</b> Bangladesh Bank e-Recruitment, Bdjobs, Skill Jobs\n\n"
-        "📋 <b>Interactive Commands:</b>\n"
-        "• /latest — 5 most recent job postings\n"
-        "• /all [page] — Browse all jobs in database (e.g. <code>/all 1</code>, <code>/all 2</code>)\n"
-        "• /search &lt;query&gt; — Search by title or bank (e.g. <code>/search Officer</code>, <code>/search IT</code>)\n"
-        "• /filter &lt;type&gt; — Filter by sector (<code>govt</code>, <code>private</code>, <code>islami</code>, <code>nbfi</code>)\n"
-        "• /banks — List all 105+ monitored institutions\n"
-        "• /resend — Re-broadcast latest alerts into the chat\n"
-        "• /check — Trigger an instant live scan with progress\n"
-        "• /stats — View database & monitoring statistics\n"
-        "• /help — Show this menu\n\n"
-        "⚡ <i>New jobs are automatically verified by AI and broadcast here!</i>"
+        "👇 <b>Select an option below to get started:</b>"
     )
-    await send_msg(update, context, welcome)
+    await send_msg(update, context, welcome, reply_markup=get_category_keyboard())
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /help command."""
-    await start_command(update, context)
+    help_text = (
+        "📋 <b>Bot Commands & Shortcuts:</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "• /categories — One-tap category browser with live vacancy counts\n"
+        "• /search [keyword] — Instant search or interactive chips\n"
+        "• /latest — 5 most recent bank circulars\n"
+        "• /all [page] — Browse all circulars with interactive next/prev buttons\n"
+        "• /filter &lt;type&gt; — Filter by sector (govt, private, islami, nbfi)\n"
+        "• /banks — View complete directory of 105+ monitored institutions\n"
+        "• /check — Trigger instant scan with live 4-step progress updates\n"
+        "• /stats — View database & scraper statistics\n"
+        "• /resend — Re-broadcast latest alerts into the chat\n\n"
+        "💡 <b>User-Friendly Tip:</b> You can also simply type any keyword directly in the chat (e.g. <i>'civil engineer'</i>, <i>'sonali bank'</i>, <i>'audit'</i>) to search immediately!"
+    )
+    await send_msg(update, context, help_text, reply_markup=get_category_keyboard())
+
+
+async def categories_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /categories command — interactive one-tap category menu."""
+    db.cleanup_expired_jobs()
+    db.cleanup_duplicates()
+    text = (
+        "📂 <b>Bank Job Categories & Sectors</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "Tap any category below to immediately view active circulars:"
+    )
+    await send_msg(update, context, text, reply_markup=get_category_keyboard())
 
 
 async def latest_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -101,7 +218,12 @@ async def latest_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     db.cleanup_duplicates()
     recent_jobs = db.get_recent_jobs(limit=5)
     if not recent_jobs:
-        await send_msg(update, context, "📭 No active jobs found in database. Run <code>/check</code> to scan now!")
+        await send_msg(
+            update,
+            context,
+            "📭 No active jobs found in database. Run <code>/check</code> to scan now!",
+            reply_markup=get_category_keyboard(),
+        )
         return
 
     await send_msg(update, context, f"📢 <b>Showing {len(recent_jobs)} Most Recent Active Bank Job Circulars:</b>")
@@ -111,9 +233,17 @@ async def latest_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await send_msg(update, context, card, disable_preview=False)
         await asyncio.sleep(0.3)
 
+    nav_kb = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("📂 Browse Categories", callback_data="menu:categories"),
+            InlineKeyboardButton("📚 Browse All Jobs", callback_data="page:1"),
+        ]
+    ])
+    await send_msg(update, context, "👉 <i>Need more? Browse by category or search below:</i>", reply_markup=nav_kb)
+
 
 async def all_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /all [page] — retrieve all verified jobs with pagination."""
+    """Handle /all [page] — retrieve all verified jobs with interactive pagination."""
     db.cleanup_expired_jobs()
     db.cleanup_duplicates()
     page = 1
@@ -123,6 +253,11 @@ async def all_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except ValueError:
             page = 1
 
+    await display_jobs_page(update, context, page)
+
+
+async def display_jobs_page(update: Update, context: ContextTypes.DEFAULT_TYPE, page: int):
+    """Display a specific page of jobs with interactive pagination buttons."""
     page_size = 5
     offset = (page - 1) * page_size
     total_jobs = db.get_job_count()
@@ -133,15 +268,16 @@ async def all_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await send_msg(
             update,
             context,
-            f"📭 No active jobs found on page {page}. (Total pages: {total_pages}).\nTry: <code>/all 1</code>",
+            f"📭 No active jobs found on page {page}. (Total pages: {total_pages}).",
+            reply_markup=get_pagination_keyboard(1, total_pages),
         )
         return
 
     total_pages = max(1, (total_jobs + page_size - 1) // page_size)
     header = (
-        f"📚 <b>Active Banking Jobs — Page {page} of {total_pages}</b>\n"
-        f"<i>({total_jobs} active circulars verified & monitored)</i>\n"
-        "───────────────────────\n"
+        f"📚 <b>Active Banking Circulars — Page {page} of {total_pages}</b>\n"
+        f"<i>({total_jobs} active circulars monitored)</i>\n"
+        "───────────────────────────"
     )
     await send_msg(update, context, header)
 
@@ -150,86 +286,183 @@ async def all_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await send_msg(update, context, card, disable_preview=False)
         await asyncio.sleep(0.3)
 
-    if page < total_pages:
-        next_hint = f"👉 To view next page, type: <code>/all {page + 1}</code>"
-        await send_msg(update, context, next_hint)
+    # Attach interactive navigation buttons
+    kb = get_pagination_keyboard(page, total_pages)
+    await send_msg(update, context, f"<b>Page {page} of {total_pages} Navigation:</b>", reply_markup=kb)
 
 
 async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /search <keyword> command."""
+    """Handle /search [keyword] command with interactive chips if query omitted."""
     db.cleanup_expired_jobs()
     db.cleanup_duplicates()
+
     if not context.args:
-        await send_msg(
-            update,
-            context,
-            "⚠️ Please provide a keyword to search.\n"
-            "Examples:\n"
-            "• <code>/search Officer</code>\n"
-            "• <code>/search Engineer</code>\n"
-            "• <code>/search Sonali</code>\n"
-            "• <code>/search Analyst</code>",
+        prompt = (
+            "🔍 <b>Quick Bank Job Search</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "Tap any quick-search chip below, or type: <code>/search &lt;query&gt;</code>\n\n"
+            "💬 <i>You can also simply type any word directly in this chat!</i>"
         )
+        await send_msg(update, context, prompt, reply_markup=get_search_keyboard())
         return
 
     keyword = " ".join(context.args).strip()
+    await execute_search(update, context, keyword)
+
+
+async def execute_search(update: Update, context: ContextTypes.DEFAULT_TYPE, keyword: str):
+    """Execute search query and return clean cards."""
     matches = db.search_jobs(keyword, limit=5)
 
     if not matches:
         await send_msg(
             update,
             context,
-            f"🔍 No active bank jobs found matching '<b>{html.escape(keyword)}</b>'.\n"
-            "Try broader keywords like <code>/search Bank</code> or <code>/search Officer</code>.",
+            f"🔍 No active bank circulars found matching '<b>{html.escape(keyword)}</b>'.\n\n"
+            "Try one of the quick categories below:",
+            reply_markup=get_category_keyboard(),
         )
         return
 
-    await send_msg(update, context, f"🔍 <b>Search results for '{html.escape(keyword)}' ({len(matches)} found):</b>")
+    await send_msg(update, context, f"🔍 <b>Search results for '{html.escape(keyword)}' ({len(matches)} circulars found):</b>")
 
     for job in matches:
         card = telegram_notifier.format_job_message(job)
         await send_msg(update, context, card, disable_preview=False)
         await asyncio.sleep(0.3)
 
+    nav_kb = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("🔍 Another Search", callback_data="menu:search"),
+            InlineKeyboardButton("📂 All Categories", callback_data="menu:categories"),
+        ]
+    ])
+    await send_msg(update, context, "👉 <i>Explore more circulars:</i>", reply_markup=nav_kb)
+
 
 async def filter_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /filter <type> (govt, private, islami, nbfi)."""
+    """Handle /filter <type> (govt, private, islami, nbfi, engineering, etc.)."""
     db.cleanup_expired_jobs()
     db.cleanup_duplicates()
+
     if not context.args:
-        await send_msg(
-            update,
-            context,
-            "⚠️ Please specify a sector to filter:\n"
-            "• <code>/filter govt</code> — State-owned & Bangladesh Bank circulars\n"
-            "• <code>/filter private</code> — Private Commercial Banks\n"
-            "• <code>/filter islami</code> — Shariah-based Islamic Banks\n"
-            "• <code>/filter nbfi</code> — Non-Bank Financial Institutions",
-        )
+        await categories_command(update, context)
         return
 
     filter_type = context.args[0].lower().strip()
-    type_map = {
-        "govt": "state_owned",
-        "government": "state_owned",
-        "private": "private",
-        "islami": "islami",
-        "islamic": "islami",
-        "nbfi": "nbfi",
-    }
-    target = type_map.get(filter_type, filter_type)
-    jobs = db.get_jobs_by_type(target, limit=5)
+    jobs = db.get_jobs_by_category_tag(filter_type, limit=5)
 
     if not jobs:
-        await send_msg(update, context, f"📭 No active jobs found for sector '<b>{html.escape(filter_type)}</b>'.")
+        await send_msg(
+            update,
+            context,
+            f"📭 No active jobs found for filter '<b>{html.escape(filter_type)}</b>'.\n"
+            "Please select from active categories below:",
+            reply_markup=get_category_keyboard(),
+        )
         return
 
-    await send_msg(update, context, f"🏷️ <b>Filter results for '{html.escape(filter_type.upper())}' ({len(jobs)} jobs):</b>")
+    await send_msg(update, context, f"🏷️ <b>Filter results for '{html.escape(filter_type.upper())}' ({len(jobs)} circulars):</b>")
 
     for job in jobs:
         card = telegram_notifier.format_job_message(job)
         await send_msg(update, context, card, disable_preview=False)
         await asyncio.sleep(0.3)
+
+    nav_kb = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("📂 Other Categories", callback_data="menu:categories"),
+            InlineKeyboardButton("🔍 Search Jobs", callback_data="menu:search"),
+        ]
+    ])
+    await send_msg(update, context, "👉 <i>Filter another sector:</i>", reply_markup=nav_kb)
+
+
+async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle interactive inline keyboard clicks."""
+    query = update.callback_query
+    await query.answer()
+    data = query.data or ""
+
+    if data == "menu:noop":
+        return
+
+    if data == "menu:categories":
+        text = (
+            "📂 <b>Bank Job Categories & Sectors</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "Tap any category below to immediately view active circulars:"
+        )
+        await query.message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=get_category_keyboard())
+        return
+
+    if data == "menu:search":
+        prompt = (
+            "🔍 <b>Quick Bank Job Search</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "Tap any quick-search chip below, or type your query directly in chat:"
+        )
+        await query.message.reply_text(prompt, parse_mode=ParseMode.HTML, reply_markup=get_search_keyboard())
+        return
+
+    if data.startswith("cat:"):
+        tag = data.split(":", 1)[1]
+        jobs = db.get_jobs_by_category_tag(tag, limit=5)
+        display_name = tag.replace("_", " ").title()
+
+        if not jobs:
+            await query.message.reply_text(
+                f"📭 No active circulars currently found in category '<b>{html.escape(display_name)}</b>'.",
+                parse_mode=ParseMode.HTML,
+                reply_markup=get_category_keyboard(),
+            )
+            return
+
+        await query.message.reply_text(
+            f"📂 <b>Showing {len(jobs)} Active Circulars for '{html.escape(display_name)}':</b>",
+            parse_mode=ParseMode.HTML,
+        )
+        for job in jobs:
+            card = telegram_notifier.format_job_message(job)
+            await query.message.reply_text(card, parse_mode=ParseMode.HTML, disable_web_page_preview=False)
+            await asyncio.sleep(0.3)
+
+        nav_kb = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("📂 Other Categories", callback_data="menu:categories"),
+                InlineKeyboardButton("🔍 Search Jobs", callback_data="menu:search"),
+            ]
+        ])
+        await query.message.reply_text("👉 <i>Need more? Browse another category:</i>", reply_markup=nav_kb)
+        return
+
+    if data.startswith("qsearch:"):
+        term = data.split(":", 1)[1]
+        await execute_search(update, context, term)
+        return
+
+    if data.startswith("page:"):
+        try:
+            page = int(data.split(":", 1)[1])
+            await display_jobs_page(update, context, page)
+        except ValueError:
+            pass
+        return
+
+
+async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Intelligent natural text query handler:
+    When user types plain text (e.g. 'engineer', 'sonali bank', 'audit', 'officer'),
+    automatically performs a search!
+    """
+    text = (update.message.text or "").strip()
+    if not text or text.startswith("/"):
+        return
+
+    # Trigger smart search for the user's input
+    logger.info(f"Natural text query received: '{text}'")
+    await execute_search(update, context, text)
 
 
 async def banks_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -329,7 +562,7 @@ async def check_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         # Step 2: Bank Career Pages & Portals
         await status_msg.edit_text(
-            f"⏳ <b>[2/4]</b> 🏦 <i>BB e-Recruitment checked ({len(bb_jobs)} circulars). Now scanning 35+ private banks...</i>",
+            f"⏳ <b>[2/4]</b> 🏦 <i>BB e-Recruitment checked ({len(bb_jobs)} circulars). Scanning 105+ banks & NBFIs...</i>",
             parse_mode=ParseMode.HTML,
         )
 
@@ -390,7 +623,7 @@ async def check_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"• 🆕 <b>New Jobs Discovered:</b> {total_new}\n"
             f"• 🧠 <b>Jobs Analyzed by AI:</b> {analyzed_count}\n"
             f"• 📢 <b>Notifications Delivered:</b> {sent_count}\n\n"
-            f"👉 Type <code>/latest</code> or <code>/all</code> to browse anytime!"
+            f"👉 Type <code>/latest</code> or <code>/categories</code> to browse anytime!"
         )
         await status_msg.edit_text(summary_text, parse_mode=ParseMode.HTML)
 
@@ -406,13 +639,14 @@ async def setup_bot_commands(application: Application):
     """Register menu commands with Telegram API."""
     commands = [
         BotCommand("latest", "Show 5 most recent bank jobs"),
-        BotCommand("all", "Browse all jobs in database (/all [page])"),
-        BotCommand("search", "Search jobs by keyword (/search IT)"),
-        BotCommand("filter", "Filter by sector (/filter govt/private/islami/nbfi)"),
-        BotCommand("banks", "List all 50+ monitored banks & NBFIs"),
-        BotCommand("resend", "Re-broadcast latest job alerts to chat"),
+        BotCommand("categories", "One-tap category browser with live counts"),
+        BotCommand("search", "Instant search or quick-search chips"),
+        BotCommand("all", "Browse all circulars with interactive next/prev buttons"),
+        BotCommand("filter", "Filter by sector or cadre"),
+        BotCommand("banks", "List all 105+ monitored banks & NBFIs"),
         BotCommand("check", "Run instant scrape with progress indicator"),
         BotCommand("stats", "View database & monitoring statistics"),
+        BotCommand("resend", "Re-broadcast latest job alerts to chat"),
         BotCommand("help", "Show help and command guide"),
     ]
     try:
@@ -443,8 +677,11 @@ def main():
         .build()
     )
 
+    # Command handlers
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler("help", help_command))
+    app.add_handler(CommandHandler("categories", categories_command))
+    app.add_handler(CommandHandler("category", categories_command))
     app.add_handler(CommandHandler("latest", latest_command))
     app.add_handler(CommandHandler("all", all_command))
     app.add_handler(CommandHandler("jobs", all_command))
@@ -455,7 +692,13 @@ def main():
     app.add_handler(CommandHandler("stats", stats_command))
     app.add_handler(CommandHandler("check", check_command))
 
-    print("✅ Bot is online with live progress indicators & all new commands!")
+    # Interactive callback query handler (inline buttons click)
+    app.add_handler(CallbackQueryHandler(handle_callback_query))
+
+    # Natural text message handler (search any keyword without typing slashes)
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_message))
+
+    print("✅ Bot is online with interactive categories, quick search chips & pagination buttons!")
     app.run_polling(poll_interval=0.5, timeout=10, drop_pending_updates=True)
 
 

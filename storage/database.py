@@ -445,16 +445,86 @@ class Database:
 
     def get_jobs_by_type(self, source_type: str, limit: int = 15) -> list:
         """Filter jobs by institution type (e.g., state_owned, private, islami, nbfi)."""
+        return self.get_jobs_by_category_tag(source_type, limit=limit)
+
+    def get_jobs_by_category_tag(self, tag: str, limit: int = 10, offset: int = 0) -> list:
+        """
+        Filter jobs by predefined categories or disciplines:
+          - govt: State-owned / Bangladesh Bank BSCS
+          - private: Private Commercial Banks
+          - islami: Islamic Banks
+          - nbfi: Non-Bank Financial Institutions
+          - engineering: Civil, Mechanical, Electrical, Textile, Architecture, etc.
+          - it: IT, Systems, Computer, Software
+          - law: Law & Legal Officers
+          - audit: Audit & Accounts
+          - analyst: Financial Analyst, Research
+          - officer: General Officers, Management Trainees
+        """
         conn = self._get_connection()
         try:
-            cursor = conn.execute("""
+            tag = tag.lower().strip()
+            params = []
+
+            if tag in ["govt", "government", "state_owned"]:
+                where_clause = "(source_type = 'state_owned' OR source = 'BB_BSCS' OR organization LIKE '%Bangladesh Bank%' OR organization LIKE '%Sonali%' OR organization LIKE '%Janata%' OR organization LIKE '%Agrani%' OR organization LIKE '%Rupali%' OR organization LIKE '%BASIC%' OR organization LIKE '%Krishi%' OR organization LIKE '%Karmasangsthan%' OR organization LIKE '%Probashi%' OR organization LIKE '%Ansar%')"
+            elif tag in ["private", "commercial"]:
+                where_clause = "(source_type = 'private' OR (source_type != 'state_owned' AND source != 'BB_BSCS' AND source_type != 'islami' AND source_type != 'nbfi'))"
+            elif tag in ["islami", "islamic"]:
+                where_clause = "(source_type = 'islami' OR title LIKE '%islami%' OR organization LIKE '%islami%' OR organization LIKE '%al-arafah%' OR organization LIKE '%sibl%')"
+            elif tag in ["nbfi", "leasing", "finance"]:
+                where_clause = "(source_type = 'nbfi' OR organization LIKE '%finance%' OR organization LIKE '%leasing%' OR organization LIKE '%idlc%' OR organization LIKE '%ipdc%')"
+            elif tag in ["engineering", "engineer", "tech"]:
+                where_clause = "(title LIKE '%engineer%' OR title LIKE '%civil%' OR title LIKE '%mechanical%' OR title LIKE '%electrical%' OR title LIKE '%textile%' OR title LIKE '%architecture%' OR title LIKE '%leather%')"
+            elif tag in ["it", "tech_it", "software", "system"]:
+                where_clause = "(title LIKE '%system%' OR title LIKE '%it%' OR title LIKE '%computer%' OR title LIKE '%software%' OR title LIKE '%developer%' OR title LIKE '%programmer%')"
+            elif tag in ["law", "legal"]:
+                where_clause = "(title LIKE '%law%' OR title LIKE '%legal%')"
+            elif tag in ["audit", "accounts", "accounting"]:
+                where_clause = "(title LIKE '%audit%' OR title LIKE '%account%')"
+            elif tag in ["analyst", "financial_analyst"]:
+                where_clause = "(title LIKE '%analyst%')"
+            elif tag in ["officer", "general"]:
+                where_clause = "(title LIKE '%officer%' OR title LIKE '%manager%' OR title LIKE '%executive%')"
+            else:
+                where_clause = "(title LIKE ? OR organization LIKE ? OR description LIKE ?)"
+                params.extend([f"%{tag}%", f"%{tag}%", f"%{tag}%"])
+
+            sql = f"""
                 SELECT * FROM jobs
-                WHERE (source_type LIKE ? OR ai_category LIKE ?)
-                  AND (ai_relevance_score >= 0.4 OR ai_relevance_score IS NULL)
+                WHERE {where_clause}
                 ORDER BY first_seen_at DESC, id DESC
-                LIMIT ?
-            """, (f"%{source_type}%", f"%{source_type}%", limit))
+                LIMIT ? OFFSET ?
+            """
+            params.extend([limit, offset])
+            cursor = conn.execute(sql, tuple(params))
             return [dict(row) for row in cursor.fetchall()]
+        finally:
+            conn.close()
+
+    def get_category_counts(self) -> dict:
+        """Get live job count for each main category and discipline."""
+        conn = self._get_connection()
+        try:
+            counts = {}
+            queries = {
+                "govt": "source_type = 'state_owned' OR source = 'BB_BSCS' OR organization LIKE '%Bank%'",
+                "private": "source_type = 'private'",
+                "islami": "source_type = 'islami'",
+                "nbfi": "source_type = 'nbfi' OR organization LIKE '%Finance%'",
+                "engineering": "title LIKE '%engineer%' OR title LIKE '%civil%' OR title LIKE '%mechanical%' OR title LIKE '%electrical%' OR title LIKE '%textile%' OR title LIKE '%architecture%'",
+                "it": "title LIKE '%system%' OR title LIKE '%computer%' OR title LIKE '%software%'",
+                "law": "title LIKE '%law%' OR title LIKE '%legal%'",
+                "audit": "title LIKE '%audit%' OR title LIKE '%account%'",
+                "analyst": "title LIKE '%analyst%'",
+                "officer": "title LIKE '%officer%'",
+            }
+            for key, condition in queries.items():
+                cur = conn.execute(f"SELECT COUNT(*) FROM jobs WHERE {condition}")
+                counts[key] = cur.fetchone()[0]
+            cur = conn.execute("SELECT COUNT(*) FROM jobs")
+            counts["total"] = cur.fetchone()[0]
+            return counts
         finally:
             conn.close()
 
