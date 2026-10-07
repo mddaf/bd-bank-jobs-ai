@@ -1,0 +1,17 @@
+# Core
+requests==2.31.0
+beautifulsoup4==4.12.3
+html5lib
+
+# Gemini AI
+google-generativeai==0.8.0
+
+# Notifications
+python-telegram-bot==21.7
+
+# Utilities
+python-dotenv==1.0.1
+schedule==1.2.2
+
+# For JS-rendered pages (Phase 5)
+# playwright==1.44.0
