@@ -94,10 +94,11 @@ def get_member_commands() -> list[BotCommand]:
     ]
 
 
-def get_owner_commands() -> list[BotCommand]:
-    """Commands visible exclusively to the Bot Owner (all commands including /mode and /requests)."""
+def get_primary_owner_commands() -> list[BotCommand]:
+    """Commands visible exclusively to the Primary Bot Owner (includes /permissions, /mode, /requests)."""
     return [
         BotCommand("start", "Start bot & interactive menu"),
+        BotCommand("permissions", "Owner: Grant / Revoke owner command permissions"),
         BotCommand("mode", "Owner: Toggle 1-on-1 Bot Public / Private"),
         BotCommand("requests", "Owner: Review & approve access requests"),
         BotCommand("fetchall", "Deliver ALL active circulars (chat recovery)"),
@@ -109,6 +110,28 @@ def get_owner_commands() -> list[BotCommand]:
         BotCommand("stats", "Database & monitoring metrics"),
         BotCommand("help", "Owner command guide"),
     ]
+
+
+def get_delegated_owner_commands() -> list[BotCommand]:
+    """Commands visible to delegated users granted owner permission (includes /mode and /requests, NO /permissions)."""
+    return [
+        BotCommand("start", "Start bot & interactive menu"),
+        BotCommand("mode", "Toggle 1-on-1 Bot Public / Private"),
+        BotCommand("requests", "Review & approve access requests"),
+        BotCommand("fetchall", "Deliver ALL active circulars (chat recovery)"),
+        BotCommand("latest", "5 most recent verified circulars"),
+        BotCommand("categories", "One-tap category browser with live counts"),
+        BotCommand("search", "Instant position search"),
+        BotCommand("scan", "Live scan across 105+ sources"),
+        BotCommand("banks", "List all 105+ monitored institutions"),
+        BotCommand("stats", "Database & monitoring metrics"),
+        BotCommand("help", "Bot command guide"),
+    ]
+
+
+def get_owner_commands() -> list[BotCommand]:
+    """Alias for primary owner commands."""
+    return get_primary_owner_commands()
 
 
 def sync_website_data(commit_message: str = "chore(sync): update jobs and access mode"):
@@ -216,10 +239,10 @@ async def send_msg(
         return None
 
 
-async def is_owner(user_id: str, context: ContextTypes.DEFAULT_TYPE = None) -> bool:
+async def is_primary_owner(user_id: str, context: ContextTypes.DEFAULT_TYPE = None) -> bool:
     """
-    Check if user_id is the bot owner (creator).
-    Only the owner can view/execute /mode, /requests, or approve/reject access requests.
+    Check if user_id is the primary root bot owner.
+    ONLY the primary owner can view/execute /permissions, /grant, /revoke.
     """
     if not user_id:
         return False
@@ -241,6 +264,26 @@ async def is_owner(user_id: str, context: ContextTypes.DEFAULT_TYPE = None) -> b
             pass
 
     return False
+
+
+async def can_manage_owner_commands(user_id: str, context: ContextTypes.DEFAULT_TYPE = None) -> bool:
+    """
+    Check if user can view/execute owner-level commands (/mode, /requests, approve/reject).
+    Allowed if user is primary owner OR has been granted owner permission via /grant or /permissions.
+    """
+    if not user_id:
+        return False
+    user_str = str(user_id).strip()
+
+    if await is_primary_owner(user_str, context):
+        return True
+
+    return db.has_owner_permission(user_str)
+
+
+async def is_owner(user_id: str, context: ContextTypes.DEFAULT_TYPE = None) -> bool:
+    """Check if user_id is the bot owner (creator). Backwards compatibility alias."""
+    return await is_primary_owner(user_id, context)
 
 
 async def is_admin(user_id: str, context: ContextTypes.DEFAULT_TYPE = None) -> bool:
@@ -303,9 +346,11 @@ def is_authorized(update: Update) -> bool:
     if chat_type in ["group", "supergroup"]:
         return chat_id == str(TELEGRAM_CHAT_ID)
 
-    # Owner is always authorized
-    if user_id and str(user_id).strip() == str(TELEGRAM_OWNER_ID).strip():
-        return True
+    # Owner or user with delegated owner permission is always authorized
+    if user_id:
+        user_str = str(user_id).strip()
+        if user_str == str(TELEGRAM_OWNER_ID).strip() or db.has_owner_permission(user_str):
+            return True
 
     # 1-on-1 Private DMs:
     mode = db.get_access_mode()
@@ -423,10 +468,11 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /help command with role-tailored guide."""
     user_id = str(update.effective_user.id) if update.effective_user else ""
-    is_user_owner = await is_owner(user_id, context)
+    is_primary = await is_primary_owner(user_id, context)
+    can_manage = await can_manage_owner_commands(user_id, context)
 
     # For non-approved guests in private chat
-    if not is_authorized(update) and not is_user_owner:
+    if not is_authorized(update) and not is_primary and not can_manage:
         guest_help = (
             "📋 <b>BD Bank Jobs AI — Guest Guide:</b>\n"
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
@@ -450,9 +496,18 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "💡 <b>Tip:</b> You can also type any keyword directly in chat (e.g., <i>'civil engineer'</i>, <i>'sonali bank'</i>, <i>'audit'</i>) to search immediately!"
     )
 
-    if is_user_owner:
+    if is_primary:
         help_text += (
-            "\n\n👑 <b>Owner Controls (Exclusive):</b>\n"
+            "\n\n👑 <b>Primary Owner Controls:</b>\n"
+            "• <code>/permissions</code> — Manage owner-level command permissions for users\n"
+            "• <code>/grant &lt;user_id&gt;</code> — Grant owner commands to user\n"
+            "• <code>/revoke &lt;user_id&gt;</code> — Revoke owner commands from user\n"
+            "• <code>/mode [public|private]</code> — Toggle 1-on-1 Bot access mode & sync website\n"
+            "• <code>/requests</code> — Review & approve/reject pending access requests"
+        )
+    elif can_manage:
+        help_text += (
+            "\n\n⭐ <b>Owner Commands (Delegated Access):</b>\n"
             "• <code>/mode [public|private]</code> — Toggle 1-on-1 Bot access mode & sync website\n"
             "• <code>/requests</code> — Review & approve/reject pending access requests"
         )
@@ -757,8 +812,8 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def mode_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Owner command to view and toggle 1-on-1 Bot Usage between PUBLIC and PRIVATE mode."""
     user_id = str(update.effective_user.id) if update.effective_user else ""
-    if not await is_owner(user_id, context):
-        await send_msg(update, context, "⛔ <b>Access Denied:</b> The <code>/mode</code> command is restricted exclusively to the bot owner.")
+    if not await can_manage_owner_commands(user_id, context):
+        await send_msg(update, context, "⛔ <b>Access Denied:</b> The <code>/mode</code> command is restricted to the bot owner and delegated managers.")
         return
 
     # Check for direct argument: /mode public or /mode private
@@ -813,9 +868,184 @@ async def mode_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def requests_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Owner command to view and review pending access requests."""
     user_id = str(update.effective_user.id) if update.effective_user else ""
-    if not await is_owner(user_id, context):
-        await send_msg(update, context, "⛔ <b>Access Denied:</b> The <code>/requests</code> command is restricted exclusively to the bot owner.")
+    if not await can_manage_owner_commands(user_id, context):
+        await send_msg(update, context, "⛔ <b>Access Denied:</b> The <code>/requests</code> command is restricted to the bot owner and delegated managers.")
         return
+
+
+async def permissions_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    PRIMARY OWNER ONLY: View and manage owner-level command permissions.
+    Allows delegating /mode and /requests execution to other trusted users.
+    """
+    user_id = str(update.effective_user.id) if update.effective_user else ""
+    if not await is_primary_owner(user_id, context):
+        await send_msg(update, context, "⛔ <b>Access Denied:</b> The <code>/permissions</code> command is restricted exclusively to the primary bot owner.")
+        return
+
+    delegated = db.list_delegated_owners()
+    approved = db.list_authorized_users(status="approved")
+
+    text = (
+        "👑 <b>Owner Command Permissions Management</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "As the primary bot owner, you can grant or revoke permission for trusted users "
+        "to see and execute owner-level commands (<code>/mode</code> and <code>/requests</code>).\n\n"
+        "<b>👥 Currently Delegated Users:</b>\n"
+    )
+
+    if delegated:
+        for u in delegated:
+            uname = f"@{u['username']}" if u.get("username") else "no_username"
+            fname = u.get("full_name") or "User"
+            uid = u["user_id"]
+            text += f"• 👤 <b>{html.escape(fname)}</b> ({uname}) — ID: <code>{uid}</code>\n"
+    else:
+        text += "• <i>No delegated users currently. Only you (Primary Owner) have access to owner commands.</i>\n"
+
+    text += (
+        "\n<b>⚙️ Delegation Commands:</b>\n"
+        "• <code>/grant &lt;user_id&gt;</code> — Grant owner commands (/mode, /requests) to user\n"
+        "• <code>/revoke &lt;user_id&gt;</code> — Revoke owner commands from user\n\n"
+        "<i>Or tap an action button below:</i>"
+    )
+
+    kb = []
+    # Add buttons to revoke currently delegated users
+    for u in delegated:
+        uname = u.get("username") or u.get("full_name") or u["user_id"]
+        kb.append([
+            InlineKeyboardButton(f"❌ Revoke: {uname} ({u['user_id']})", callback_data=f"perm_rev:{u['user_id']}")
+        ])
+
+    # Add buttons for other approved users to grant
+    delegated_ids = {str(u["user_id"]) for u in delegated}
+    non_delegated = [
+        u for u in approved 
+        if str(u["user_id"]) not in delegated_ids and str(u["user_id"]) != str(TELEGRAM_OWNER_ID)
+    ]
+    for u in non_delegated[:6]:
+        uname = u.get("username") or u.get("full_name") or u["user_id"]
+        kb.append([
+            InlineKeyboardButton(f"➕ Grant: {uname} ({u['user_id']})", callback_data=f"perm_grant:{u['user_id']}")
+        ])
+
+    reply_markup = InlineKeyboardMarkup(kb) if kb else None
+    await send_msg(update, context, text, reply_markup=reply_markup)
+
+
+async def grant_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """PRIMARY OWNER ONLY: Grant owner commands (/mode, /requests) to a user ID."""
+    user_id = str(update.effective_user.id) if update.effective_user else ""
+    if not await is_primary_owner(user_id, context):
+        await send_msg(update, context, "⛔ <b>Access Denied:</b> Only the primary bot owner can grant command permissions.")
+        return
+
+    if not context.args:
+        await send_msg(
+            update,
+            context,
+            "⚠️ <b>Usage:</b> <code>/grant &lt;user_id&gt;</code>\n"
+            "Example: <code>/grant 123456789</code>\n\n"
+            "<i>Use <code>/permissions</code> to view all users.</i>"
+        )
+        return
+
+    target_uid = context.args[0].replace("@", "").strip()
+    if not target_uid.isdigit():
+        await send_msg(update, context, "⚠️ <b>Invalid User ID:</b> Please provide a numeric Telegram User ID.")
+        return
+
+    db.grant_owner_permission(target_uid, granted_by=user_id)
+
+    # Dynamically update the target user's Telegram command menu scope
+    try:
+        await context.bot.set_my_commands(
+            get_delegated_owner_commands(),
+            scope=BotCommandScopeChat(chat_id=int(target_uid))
+        )
+    except Exception as e:
+        logger.warning(f"Could not update scoped commands for granted user {target_uid}: {e}")
+
+    # Notify target user in Telegram DM
+    try:
+        await context.bot.send_message(
+            chat_id=int(target_uid),
+            text=(
+                "🎉 <b>Owner Command Permissions Granted!</b>\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                "The bot owner has granted you permission to view and execute owner commands:\n"
+                "• <code>/mode</code> — Toggle 1-on-1 Bot Public / Private & sync website\n"
+                "• <code>/requests</code> — Review and approve user access requests\n\n"
+                "Your Telegram command menu has been updated with these commands!"
+            ),
+            parse_mode=ParseMode.HTML
+        )
+    except Exception:
+        pass
+
+    await send_msg(
+        update,
+        context,
+        f"✅ <b>Permissions Granted!</b>\n"
+        f"User <code>{target_uid}</code> has been granted owner command permissions.\n"
+        f"Their Telegram command menu has been updated with <code>/mode</code> and <code>/requests</code>."
+    )
+
+
+async def revoke_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """PRIMARY OWNER ONLY: Revoke owner commands from a user ID."""
+    user_id = str(update.effective_user.id) if update.effective_user else ""
+    if not await is_primary_owner(user_id, context):
+        await send_msg(update, context, "⛔ <b>Access Denied:</b> Only the primary bot owner can revoke command permissions.")
+        return
+
+    if not context.args:
+        await send_msg(
+            update,
+            context,
+            "⚠️ <b>Usage:</b> <code>/revoke &lt;user_id&gt;</code>\n"
+            "Example: <code>/revoke 123456789</code>\n\n"
+            "<i>Use <code>/permissions</code> to view all delegated users.</i>"
+        )
+        return
+
+    target_uid = context.args[0].replace("@", "").strip()
+    if not target_uid.isdigit():
+        await send_msg(update, context, "⚠️ <b>Invalid User ID:</b> Please provide a numeric Telegram User ID.")
+        return
+
+    db.revoke_owner_permission(target_uid)
+
+    # Revert target user's Telegram command menu scope to standard member commands
+    try:
+        await context.bot.set_my_commands(
+            get_member_commands(),
+            scope=BotCommandScopeChat(chat_id=int(target_uid))
+        )
+    except Exception as e:
+        logger.warning(f"Could not revert scoped commands for revoked user {target_uid}: {e}")
+
+    # Notify target user in Telegram DM
+    try:
+        await context.bot.send_message(
+            chat_id=int(target_uid),
+            text=(
+                "ℹ️ <b>Permission Update:</b>\n"
+                "Your owner command permissions (<code>/mode</code>, <code>/requests</code>) have been revoked by the bot owner."
+            ),
+            parse_mode=ParseMode.HTML
+        )
+    except Exception:
+        pass
+
+    await send_msg(
+        update,
+        context,
+        f"✅ <b>Permissions Revoked!</b>\n"
+        f"User <code>{target_uid}</code> no longer has owner command access.\n"
+        f"Their Telegram menu has been reset to standard member commands."
+    )
 
     pending = db.list_authorized_users(status="pending")
     if not pending:
@@ -954,8 +1184,8 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
         admin_user = query.from_user
         admin_uid = str(admin_user.id)
 
-        if not await is_owner(admin_uid, context):
-            await query.answer("⛔ Access Denied: Only the bot owner can approve access requests.", show_alert=True)
+        if not await can_manage_owner_commands(admin_uid, context):
+            await query.answer("⛔ Access Denied: Only the bot owner or delegated managers can approve access requests.", show_alert=True)
             return
 
         db.authorize_user(target_uid, access_type=req_type, approved_by=admin_uid)
@@ -1032,8 +1262,8 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
         admin_user = query.from_user
         admin_uid = str(admin_user.id)
 
-        if not await is_owner(admin_uid, context):
-            await query.answer("⛔ Access Denied: Only the bot owner can reject access requests.", show_alert=True)
+        if not await can_manage_owner_commands(admin_uid, context):
+            await query.answer("⛔ Access Denied: Only the bot owner or delegated managers can reject access requests.", show_alert=True)
             return
 
         db.reject_user(target_uid, rejected_by=admin_uid)
@@ -1065,8 +1295,8 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
     if data.startswith("set_mode:"):
         new_mode = data.split(":", 1)[1]
         admin_uid = str(query.from_user.id)
-        if not await is_owner(admin_uid, context):
-            await query.answer("⛔ Access Denied: Only the bot owner can change bot access mode.", show_alert=True)
+        if not await can_manage_owner_commands(admin_uid, context):
+            await query.answer("⛔ Access Denied: Only the bot owner or delegated managers can change bot access mode.", show_alert=True)
             return
 
         db.set_access_mode(new_mode)
@@ -1094,6 +1324,156 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
             await query.edit_message_text(msg, parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(kb))
         except Exception:
             await query.message.reply_text(msg, parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(kb))
+        return
+
+    # ------------------------------------------------------------
+    # Permission Delegation Callbacks (Primary Owner Only)
+    # ------------------------------------------------------------
+    if data.startswith("perm_grant:"):
+        target_uid = data.split(":", 1)[1]
+        owner_user = query.from_user
+        owner_uid = str(owner_user.id)
+
+        if not await is_primary_owner(owner_uid, context):
+            await query.answer("⛔ Access Denied: Only primary bot owner can grant permissions.", show_alert=True)
+            return
+
+        db.grant_owner_permission(target_uid, granted_by=owner_uid)
+
+        try:
+            await context.bot.set_my_commands(
+                get_delegated_owner_commands(),
+                scope=BotCommandScopeChat(chat_id=int(target_uid))
+            )
+        except Exception as e:
+            logger.warning(f"Could not update scoped commands for user {target_uid}: {e}")
+
+        try:
+            await context.bot.send_message(
+                chat_id=int(target_uid),
+                text=(
+                    "🎉 <b>Owner Command Permissions Granted!</b>\n"
+                    "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                    "The bot owner has granted you permission to view and execute owner commands:\n"
+                    "• <code>/mode</code> — Toggle 1-on-1 Bot Public / Private & sync website\n"
+                    "• <code>/requests</code> — Review and approve user access requests\n\n"
+                    "Your Telegram command menu has been updated with these commands!"
+                ),
+                parse_mode=ParseMode.HTML
+            )
+        except Exception:
+            pass
+
+        await query.answer(f"✅ Granted owner permissions to User {target_uid}!", show_alert=True)
+
+        delegated = db.list_delegated_owners()
+        approved = db.list_authorized_users(status="approved")
+        text = (
+            "👑 <b>Owner Command Permissions Management</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "As the primary bot owner, you can grant or revoke permission for trusted users "
+            "to see and execute owner-level commands (<code>/mode</code> and <code>/requests</code>).\n\n"
+            "<b>👥 Currently Delegated Users:</b>\n"
+        )
+        if delegated:
+            for u in delegated:
+                uname = f"@{u['username']}" if u.get("username") else "no_username"
+                fname = u.get("full_name") or "User"
+                uid = u["user_id"]
+                text += f"• 👤 <b>{html.escape(fname)}</b> ({uname}) — ID: <code>{uid}</code>\n"
+        else:
+            text += "• <i>No delegated users currently. Only you (Primary Owner) have access to owner commands.</i>\n"
+
+        text += (
+            "\n<b>⚙️ Delegation Commands:</b>\n"
+            "• <code>/grant &lt;user_id&gt;</code> — Grant owner commands (/mode, /requests) to user\n"
+            "• <code>/revoke &lt;user_id&gt;</code> — Revoke owner commands from user\n\n"
+            "<i>Or tap an action button below:</i>"
+        )
+        kb = []
+        for u in delegated:
+            uname = u.get("username") or u.get("full_name") or u["user_id"]
+            kb.append([InlineKeyboardButton(f"❌ Revoke: {uname} ({u['user_id']})", callback_data=f"perm_rev:{u['user_id']}")])
+        delegated_ids = {str(u["user_id"]) for u in delegated}
+        non_delegated = [u for u in approved if str(u["user_id"]) not in delegated_ids and str(u["user_id"]) != str(TELEGRAM_OWNER_ID)]
+        for u in non_delegated[:6]:
+            uname = u.get("username") or u.get("full_name") or u["user_id"]
+            kb.append([InlineKeyboardButton(f"➕ Grant: {uname} ({u['user_id']})", callback_data=f"perm_grant:{u['user_id']}")])
+
+        try:
+            await query.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(kb) if kb else None)
+        except Exception:
+            pass
+        return
+
+    if data.startswith("perm_rev:"):
+        target_uid = data.split(":", 1)[1]
+        owner_user = query.from_user
+        owner_uid = str(owner_user.id)
+
+        if not await is_primary_owner(owner_uid, context):
+            await query.answer("⛔ Access Denied: Only primary bot owner can revoke permissions.", show_alert=True)
+            return
+
+        db.revoke_owner_permission(target_uid)
+
+        try:
+            await context.bot.set_my_commands(
+                get_member_commands(),
+                scope=BotCommandScopeChat(chat_id=int(target_uid))
+            )
+        except Exception as e:
+            logger.warning(f"Could not revert scoped commands for user {target_uid}: {e}")
+
+        try:
+            await context.bot.send_message(
+                chat_id=int(target_uid),
+                text="ℹ️ <b>Permission Update:</b> Your owner command permissions (<code>/mode</code>, <code>/requests</code>) have been revoked by the bot owner.",
+                parse_mode=ParseMode.HTML
+            )
+        except Exception:
+            pass
+
+        await query.answer(f"✅ Revoked owner permissions from User {target_uid}!", show_alert=True)
+
+        delegated = db.list_delegated_owners()
+        approved = db.list_authorized_users(status="approved")
+        text = (
+            "👑 <b>Owner Command Permissions Management</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "As the primary bot owner, you can grant or revoke permission for trusted users "
+            "to see and execute owner-level commands (<code>/mode</code> and <code>/requests</code>).\n\n"
+            "<b>👥 Currently Delegated Users:</b>\n"
+        )
+        if delegated:
+            for u in delegated:
+                uname = f"@{u['username']}" if u.get("username") else "no_username"
+                fname = u.get("full_name") or "User"
+                uid = u["user_id"]
+                text += f"• 👤 <b>{html.escape(fname)}</b> ({uname}) — ID: <code>{uid}</code>\n"
+        else:
+            text += "• <i>No delegated users currently. Only you (Primary Owner) have access to owner commands.</i>\n"
+
+        text += (
+            "\n<b>⚙️ Delegation Commands:</b>\n"
+            "• <code>/grant &lt;user_id&gt;</code> — Grant owner commands (/mode, /requests) to user\n"
+            "• <code>/revoke &lt;user_id&gt;</code> — Revoke owner commands from user\n\n"
+            "<i>Or tap an action button below:</i>"
+        )
+        kb = []
+        for u in delegated:
+            uname = u.get("username") or u.get("full_name") or u["user_id"]
+            kb.append([InlineKeyboardButton(f"❌ Revoke: {uname} ({u['user_id']})", callback_data=f"perm_rev:{u['user_id']}")])
+        delegated_ids = {str(u["user_id"]) for u in delegated}
+        non_delegated = [u for u in approved if str(u["user_id"]) not in delegated_ids and str(u["user_id"]) != str(TELEGRAM_OWNER_ID)]
+        for u in non_delegated[:6]:
+            uname = u.get("username") or u.get("full_name") or u["user_id"]
+            kb.append([InlineKeyboardButton(f"➕ Grant: {uname} ({u['user_id']})", callback_data=f"perm_grant:{u['user_id']}")])
+
+        try:
+            await query.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(kb) if kb else None)
+        except Exception:
+            pass
         return
 
     if data == "menu:fetchall":
@@ -1258,18 +1638,33 @@ async def setup_bot_commands(application: Application):
         # 1. Default Scope (Guests / Non-approved users): ONLY see /start, /requestaccess, /help
         await application.bot.set_my_commands(get_guest_commands(), scope=BotCommandScopeDefault())
 
-        # 2. Group Chats Scope (All group members): see member commands (NO /mode, /requests, /requestaccess)
+        # 2. Group Chats Scope (All group members): see member commands (NO /mode, /requests, /permissions, /requestaccess)
         await application.bot.set_my_commands(get_member_commands(), scope=BotCommandScopeAllGroupChats())
 
-        # 3. Owner Private Chat Scope: see ALL commands including /mode and /requests
+        # 3. Primary Owner Private Chat Scope: sees ALL commands including /permissions, /mode, /requests
         owner_id = int(str(TELEGRAM_OWNER_ID).strip())
-        await application.bot.set_my_commands(get_owner_commands(), scope=BotCommandScopeChat(chat_id=owner_id))
+        await application.bot.set_my_commands(get_primary_owner_commands(), scope=BotCommandScopeChat(chat_id=owner_id))
 
-        # 4. Approved 1-on-1 Members: set member commands in their DM (NO /mode, /requests, /requestaccess)
+        # 4. Delegated Owners: see /mode and /requests along with member commands (NO /permissions)
+        delegated_users = db.list_delegated_owners()
+        delegated_ids = set()
+        for du in delegated_users:
+            uid = du.get("user_id")
+            if uid and str(uid).strip() != str(owner_id).strip():
+                try:
+                    delegated_ids.add(str(uid).strip())
+                    await application.bot.set_my_commands(
+                        get_delegated_owner_commands(),
+                        scope=BotCommandScopeChat(chat_id=int(uid))
+                    )
+                except Exception:
+                    pass
+
+        # 5. Approved 1-on-1 Members (Non-delegated): set member commands in their DM (NO /mode, /requests, /permissions, /requestaccess)
         approved_users = db.list_authorized_users(status="approved")
         for u in approved_users:
             uid = u.get("user_id")
-            if uid and str(uid).strip() != str(owner_id).strip():
+            if uid and str(uid).strip() != str(owner_id).strip() and str(uid).strip() not in delegated_ids:
                 try:
                     await application.bot.set_my_commands(get_member_commands(), scope=BotCommandScopeChat(chat_id=int(uid)))
                 except Exception:
@@ -1325,6 +1720,10 @@ def main():
     app.add_handler(CommandHandler("mode", mode_command))
     app.add_handler(CommandHandler("toggleprivacy", mode_command))
     app.add_handler(CommandHandler("requests", requests_command))
+    app.add_handler(CommandHandler("permissions", permissions_command))
+    app.add_handler(CommandHandler("permission", permissions_command))
+    app.add_handler(CommandHandler("grant", grant_command))
+    app.add_handler(CommandHandler("revoke", revoke_command))
     app.add_handler(CommandHandler("requestaccess", request_access_command))
     app.add_handler(CommandHandler("access", request_access_command))
 

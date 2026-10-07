@@ -371,44 +371,91 @@
       <div class="modal-body">
         <!-- Tab Content: Bot Usage -->
         <div class="modal-tab-pane" id="pane-tab-bot">
-          <div class="invite-intro-box">
-            <p><strong>Direct Bot Usage</strong> allows you to search and browse jobs in personal chat without joining any group or receiving group notifications.</p>
-          </div>
+          <!-- Public Mode Flow (Visible when bot is Public) -->
+          <div id="bot-flow-public" style="display: none;">
+            <div class="invite-intro-box intro-public">
+              <p><strong>🌐 1-on-1 Bot Usage is Publicly Open!</strong> Anyone on Telegram can chat directly with <code>@BDBankJobMonitorBot</code> to search circulars, browse categories, and query jobs — <em>no admin approval or group membership required</em>.</p>
+            </div>
 
-          <div class="invite-step-card">
-            <div class="step-num">1</div>
-            <div class="step-info">
-              <h4>Open Bot in Telegram</h4>
-              <p>Click below to open <code>@BDBankJobMonitorBot</code> in Telegram.</p>
+            <div class="invite-step-card">
+              <div class="step-num">1</div>
+              <div class="step-info">
+                <h4>Open Bot in Telegram</h4>
+                <p>Click below to open <code>@BDBankJobMonitorBot</code> directly in your Telegram app or browser.</p>
+              </div>
+            </div>
+
+            <div class="invite-step-card">
+              <div class="step-num">2</div>
+              <div class="step-info">
+                <h4>Send <code>/start</code></h4>
+                <p>Instant access unlocked! No waiting or admin review needed. The bot immediately launches your interactive query dashboard.</p>
+              </div>
+            </div>
+
+            <div class="invite-step-card">
+              <div class="step-num">3</div>
+              <div class="step-info">
+                <h4>Query & Retrieve Circulars</h4>
+                <p>Use <code>/latest</code> (5 newest jobs), <code>/categories</code> (one-tap discipline browser), <code>/search &lt;query&gt;</code>, or <code>/fetchall</code> anytime!</p>
+              </div>
+            </div>
+
+            <div class="invite-copy-box">
+              <div class="invite-copy-header">
+                <label>⚡ Quick Commands to Try in Bot:</label>
+                <span class="copy-hint">Click any command to copy</span>
+              </div>
+              <div class="modal-cmd-pills">
+                <button type="button" class="modal-cmd-chip" data-cmd="/latest"><code>/latest</code> 5 newest circulars</button>
+                <button type="button" class="modal-cmd-chip" data-cmd="/categories"><code>/categories</code> Category browser</button>
+                <button type="button" class="modal-cmd-chip" data-cmd="/search officer"><code>/search officer</code> Search jobs</button>
+                <button type="button" class="modal-cmd-chip" data-cmd="/fetchall"><code>/fetchall</code> Full chat history</button>
+              </div>
             </div>
           </div>
 
-          <div class="invite-step-card">
-            <div class="step-num">2</div>
-            <div class="step-info">
-              <h4>Tap "Request Bot Usage Permission"</h4>
-              <p>Send <code>/start</code> or <code>/requestaccess</code> and tap the <strong>Request Bot Usage Permission</strong> button.</p>
+          <!-- Private Mode Flow (Visible when bot is Private) -->
+          <div id="bot-flow-private">
+            <div class="invite-intro-box">
+              <p><strong>Direct Bot Usage</strong> allows you to search and browse jobs in personal chat without joining any group or receiving group notifications.</p>
             </div>
-          </div>
 
-          <div class="invite-step-card">
-            <div class="step-num">3</div>
-            <div class="step-info">
-              <h4>Instant Admin Review</h4>
-              <p>The administrator receives an instant approval notification. As soon as approved, the bot unlocks full query access in your chat!</p>
+            <div class="invite-step-card">
+              <div class="step-num">1</div>
+              <div class="step-info">
+                <h4>Open Bot in Telegram</h4>
+                <p>Click below to open <code>@BDBankJobMonitorBot</code> in Telegram.</p>
+              </div>
             </div>
-          </div>
 
-          <div class="invite-copy-box">
-            <div class="invite-copy-header">
-              <label for="invite-template-bot">💬 Sample Request Message:</label>
-              <span class="copy-hint">Copy & paste in Telegram</span>
+            <div class="invite-step-card">
+              <div class="step-num">2</div>
+              <div class="step-info">
+                <h4>Tap "Request Bot Usage Permission"</h4>
+                <p>Send <code>/start</code> or <code>/requestaccess</code> and tap the <strong>Request Bot Usage Permission</strong> button.</p>
+              </div>
             </div>
-            <textarea id="invite-template-bot" readonly rows="2" class="invite-textarea">Hello Admin, I would like permission to use the BD Bank Jobs AI Bot in 1-on-1 direct chat.</textarea>
-            <div class="invite-copy-footer">
-              <button class="btn btn-secondary btn-sm copy-template-btn" data-target="invite-template-bot">
-                <span>📋 Copy Message Template</span>
-              </button>
+
+            <div class="invite-step-card">
+              <div class="step-num">3</div>
+              <div class="step-info">
+                <h4>Instant Admin Review</h4>
+                <p>The administrator receives an instant approval notification. As soon as approved, the bot unlocks full query access in your chat!</p>
+              </div>
+            </div>
+
+            <div class="invite-copy-box">
+              <div class="invite-copy-header">
+                <label for="invite-template-bot">💬 Sample Request Message:</label>
+                <span class="copy-hint">Copy & paste in Telegram</span>
+              </div>
+              <textarea id="invite-template-bot" readonly rows="2" class="invite-textarea">Hello Admin, I would like permission to use the BD Bank Jobs AI Bot in 1-on-1 direct chat.</textarea>
+              <div class="invite-copy-footer">
+                <button class="btn btn-secondary btn-sm copy-template-btn" data-target="invite-template-bot">
+                  <span>📋 Copy Message Template</span>
+                </button>
+              </div>
             </div>
           </div>
         </div>

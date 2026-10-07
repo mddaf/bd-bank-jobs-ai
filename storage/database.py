@@ -112,6 +112,12 @@ class Database:
             except sqlite3.OperationalError:
                 pass
 
+            # Add can_manage_owner_cmds column to authorized_users if missing
+            try:
+                conn.execute("ALTER TABLE authorized_users ADD COLUMN can_manage_owner_cmds INTEGER DEFAULT 0")
+            except sqlite3.OperationalError:
+                pass
+
             conn.commit()
             logger.info(f"Database initialized at {self.db_path}")
         finally:
@@ -728,6 +734,66 @@ class Database:
             cursor = conn.execute(
                 "SELECT * FROM authorized_users WHERE status = ? ORDER BY updated_at DESC",
                 (status,)
+            )
+            return [dict(row) for row in cursor.fetchall()]
+        finally:
+            conn.close()
+
+    def grant_owner_permission(self, user_id: str, username: Optional[str] = None,
+                               full_name: Optional[str] = None, granted_by: Optional[str] = None) -> bool:
+        """Grant permission to a user to execute owner-level commands (/mode, /requests)."""
+        conn = self._get_connection()
+        try:
+            conn.execute("""
+                INSERT INTO authorized_users (
+                    user_id, username, full_name, access_type, approved_by, status, can_manage_owner_cmds, updated_at
+                ) VALUES (?, ?, ?, 'admin', ?, 'approved', 1, CURRENT_TIMESTAMP)
+                ON CONFLICT(user_id) DO UPDATE SET
+                    username = coalesce(excluded.username, authorized_users.username),
+                    full_name = coalesce(excluded.full_name, authorized_users.full_name),
+                    approved_by = excluded.approved_by,
+                    status = 'approved',
+                    can_manage_owner_cmds = 1,
+                    updated_at = CURRENT_TIMESTAMP
+            """, (str(user_id), username, full_name, granted_by))
+            conn.commit()
+            return True
+        finally:
+            conn.close()
+
+    def revoke_owner_permission(self, user_id: str) -> bool:
+        """Revoke owner-level command permission from a user."""
+        conn = self._get_connection()
+        try:
+            conn.execute("""
+                UPDATE authorized_users
+                SET can_manage_owner_cmds = 0, updated_at = CURRENT_TIMESTAMP
+                WHERE user_id = ?
+            """, (str(user_id),))
+            conn.commit()
+            return True
+        finally:
+            conn.close()
+
+    def has_owner_permission(self, user_id: str) -> bool:
+        """Check if user has been granted permission to execute owner-level commands."""
+        conn = self._get_connection()
+        try:
+            cursor = conn.execute(
+                "SELECT can_manage_owner_cmds FROM authorized_users WHERE user_id = ? AND status = 'approved'",
+                (str(user_id),)
+            )
+            row = cursor.fetchone()
+            return bool(row and row["can_manage_owner_cmds"] == 1)
+        finally:
+            conn.close()
+
+    def list_delegated_owners(self) -> List[Dict]:
+        """List all users who currently have owner command permissions granted."""
+        conn = self._get_connection()
+        try:
+            cursor = conn.execute(
+                "SELECT * FROM authorized_users WHERE can_manage_owner_cmds = 1 AND status = 'approved' ORDER BY updated_at DESC"
             )
             return [dict(row) for row in cursor.fetchall()]
         finally:

@@ -410,6 +410,16 @@
       });
     });
 
+    // Quick Command copy chips in public modal
+    document.querySelectorAll('.modal-cmd-chip').forEach(chip => {
+      chip.addEventListener('click', () => {
+        const cmd = chip.dataset.cmd || chip.innerText.trim();
+        navigator.clipboard.writeText(cmd)
+          .then(() => showToast(`⚡ Command ${cmd} copied!`))
+          .catch(() => showToast('Copied to clipboard.'));
+      });
+    });
+
     document.addEventListener('keydown', (e) => {
       if (e.key === 'Escape') {
         if (elements.modalBackdrop && elements.modalBackdrop.style.display !== 'none') {
@@ -705,7 +715,48 @@
     document.body.style.overflow = '';
   }
 
+  function updateModalActionBtn(tabName, isPublic) {
+    const actionBtn = document.getElementById('modal-action-btn');
+    const badgeEl = document.getElementById('modal-org-badge');
+    const titleEl = document.getElementById('modal-invite-title');
+
+    if (!actionBtn) return;
+
+    if (tabName === 'group') {
+      actionBtn.href = 'https://t.me/BDBankJobMonitorBot?start=request_group';
+      actionBtn.innerHTML = '<span>Open Bot to Request Group Invite ➔</span>';
+      if (badgeEl) badgeEl.textContent = '🔒 Telegram Access Protocol';
+      if (titleEl) titleEl.textContent = 'Request Private Group Invite';
+    } else {
+      // tabName === 'bot'
+      if (isPublic) {
+        actionBtn.href = 'https://t.me/BDBankJobMonitorBot';
+        actionBtn.innerHTML = '<span>🚀 Start 1-on-1 Bot Chat Now ➔</span>';
+        if (badgeEl) badgeEl.textContent = '🌐 Public 1-on-1 Bot Access';
+        if (titleEl) titleEl.textContent = 'Direct 1-on-1 Bot Access';
+      } else {
+        actionBtn.href = 'https://t.me/BDBankJobMonitorBot?start=request_access';
+        actionBtn.innerHTML = '<span>Open Bot in Telegram to Request ➔</span>';
+        if (badgeEl) badgeEl.textContent = '🔒 Telegram Access Protocol';
+        if (titleEl) titleEl.textContent = 'Request Bot Usage Access';
+      }
+    }
+  }
+
+  function updateModalForMode() {
+    const isPublic = (state.botAccessMode === 'public');
+    const flowPub = document.getElementById('bot-flow-public');
+    const flowPriv = document.getElementById('bot-flow-private');
+
+    if (flowPub) flowPub.style.display = isPublic ? 'block' : 'none';
+    if (flowPriv) flowPriv.style.display = isPublic ? 'none' : 'block';
+
+    const currentTab = state.activeModalTab || 'bot';
+    updateModalActionBtn(currentTab, isPublic);
+  }
+
   function switchModalTab(tabName) {
+    state.activeModalTab = tabName;
     const modalTabs = document.getElementById('modal-access-tabs');
     if (modalTabs) {
       modalTabs.querySelectorAll('.modal-tab-btn').forEach(b => {
@@ -716,11 +767,15 @@
     const paneGroup = document.getElementById('pane-tab-group');
     if (paneBot) paneBot.style.display = tabName === 'bot' ? 'block' : 'none';
     if (paneGroup) paneGroup.style.display = tabName === 'group' ? 'block' : 'none';
+
+    updateModalActionBtn(tabName, state.botAccessMode === 'public');
   }
 
   function openInviteModal(tab = 'bot') {
     const backdrop = document.getElementById('invite-modal-backdrop');
     if (!backdrop) return;
+    state.activeModalTab = tab;
+    updateModalForMode();
     switchModalTab(tab);
     backdrop.style.display = 'flex';
     document.body.style.overflow = 'hidden';
@@ -789,6 +844,9 @@
         }
       }
     }
+
+    // Synchronize modal state as well
+    updateModalForMode();
   }
 
   /**

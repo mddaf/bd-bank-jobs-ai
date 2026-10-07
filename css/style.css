@@ -1554,6 +1554,43 @@ h4 {
   color: var(--accent-emerald) !important;
 }
 
+.modal-cmd-pills {
+  display: flex !important;
+  flex-wrap: wrap !important;
+  gap: 8px !important;
+  margin-top: 4px !important;
+}
+
+.modal-cmd-chip {
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 6px !important;
+  background: var(--bg-surface) !important;
+  border: 1px solid var(--border-subtle) !important;
+  border-radius: var(--radius-sm) !important;
+  padding: 8px 12px !important;
+  font-size: 0.82rem !important;
+  color: var(--text-secondary) !important;
+  cursor: pointer !important;
+  font-family: inherit !important;
+  transition: all var(--transition-fast) !important;
+}
+
+.modal-cmd-chip:hover {
+  border-color: var(--accent-emerald) !important;
+  color: var(--text-primary) !important;
+  background: rgba(16, 185, 129, 0.12) !important;
+  transform: translateY(-1px) !important;
+}
+
+.modal-cmd-chip code {
+  color: var(--accent-emerald) !important;
+  font-weight: 700 !important;
+  background: rgba(16, 185, 129, 0.15) !important;
+  padding: 2px 4px !important;
+  border-radius: 3px !important;
+}
+
 /* Toast */
 .toast {
   position: fixed;
