@@ -26,9 +26,10 @@ from datetime import datetime
 import io
 
 # Force UTF-8 for console output on Windows
-_console_handler = logging.StreamHandler(
-    io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
-)
+if sys.stdout.encoding != "utf-8":
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+
+_console_handler = logging.StreamHandler(sys.stdout)
 _file_handler = logging.FileHandler("monitor.log", encoding="utf-8")
 
 logging.basicConfig(
@@ -47,6 +48,7 @@ from storage.database import Database
 from scrapers.career_page_scraper import CareerPageScraper
 from scrapers.bdjobs_scraper import BdjobsScraper
 from scrapers.bb_erecruitment_scraper import BBErecruitmentScraper
+from scrapers.portal_scraper import PortalScraper
 from ai.job_analyzer import JobAnalyzer
 from ai.gemini_client import GeminiClient
 from notifiers.telegram_bot import TelegramNotifier
@@ -174,6 +176,44 @@ def scrape_all_sources(db: Database) -> int:
         db.log_scrape(
             source="BDJOBS",
             source_url="https://jobs.bdjobs.com",
+            status="error",
+            error_message=str(e)[:500],
+            duration_seconds=duration,
+        )
+
+    # ── Scrape Modern Job Portals & Aggregators (LinkedIn, BDJobsToday, Chakrir Khobor, Skill Jobs) ──
+    logger.info(f"\n🌐 Scraping Auxiliary Portals & Circular Aggregators (LinkedIn, BDJobsToday, Chakrir Khobor, Skill Jobs)...")
+    start_time = time.time()
+    try:
+        portal_scraper = PortalScraper()
+        portal_jobs = portal_scraper.scrape_all_portals()
+        new_count = 0
+
+        for job in portal_jobs:
+            job_id = db.insert_job(job)
+            if job_id is not None:
+                new_count += 1
+
+        duration = time.time() - start_time
+        total_found += len(portal_jobs)
+        total_new += new_count
+
+        db.log_scrape(
+            source="PORTALS_AND_MEDIA",
+            source_url="Multiple Sources (LinkedIn, BDJobsToday, Chakrir Khobor, Skill Jobs)",
+            status="success",
+            jobs_found=len(portal_jobs),
+            new_jobs=new_count,
+            duration_seconds=duration,
+        )
+        logger.info(f"  ✅ Auxiliary Portals: {new_count} NEW jobs (of {len(portal_jobs)} found)")
+
+    except Exception as e:
+        duration = time.time() - start_time
+        logger.error(f"  ❌ Auxiliary Portals error: {e}")
+        db.log_scrape(
+            source="PORTALS_AND_MEDIA",
+            source_url="Multiple Sources",
             status="error",
             error_message=str(e)[:500],
             duration_seconds=duration,

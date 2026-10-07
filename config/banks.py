@@ -910,36 +910,36 @@ JOB_PORTALS = [
         "name": "bdjobs.com (Banking & Finance Category)",
         "short_name": "BDJOBS",
         "type": "job_portal",
-        "career_url": "https://jobs.bdjobs.com/jobsearch.asp?fcatId=2",
+        "career_url": "https://api.bdjobs.com/Jobs/api/JobSearch/GetJobSearch",
         "enabled": True,
     },
     {
         "name": "Skill Jobs (Bank & Financial Institution)",
         "short_name": "SKILL_JOBS",
         "type": "job_portal",
-        "career_url": "https://skill.jobs/jobs/category/bank-non-bank-fin-institution",
+        "career_url": "https://skill.jobs/browse-jobs?search=bank",
         "enabled": True,
     },
     {
         "name": "LinkedIn BD Bank Jobs",
         "short_name": "LINKEDIN_BD",
         "type": "job_portal",
-        "career_url": "https://www.linkedin.com/jobs/search/?geoId=103775087&keywords=bank",
-        "enabled": False,  # Strict bot firewall, optional via API
+        "career_url": "https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search?keywords=bank&location=Bangladesh&geoId=106215326",
+        "enabled": True,
     },
     {
-        "name": "BDJobsToday",
+        "name": "BDJobsToday (Bank/Finance/Insurance)",
         "short_name": "BDJOBSTODAY",
         "type": "image_aggregator",
-        "career_url": "https://bdjobstoday.com/",
-        "enabled": False,  # Newspaper cutout images
+        "career_url": "https://bdjobstoday.com/jobs.php?cat=3&cat_name=Bank/Finance/Insurance",
+        "enabled": True,
     },
     {
-        "name": "Chakrir Khobor",
+        "name": "Chakrir Khobor (Bank Jobs Media)",
         "short_name": "CHAKRIR_KHOBOR",
         "type": "image_aggregator",
-        "career_url": "https://chakrirkhobor.com.bd/",
-        "enabled": False,  # Newspaper cutout images
+        "career_url": "https://chakrirkhobor.com.bd/tag/bank-jobs/",
+        "enabled": True,
     },
 ]
 
@@ -951,6 +951,12 @@ def get_enabled_sources():
     return [s for s in BANKS if s.get("enabled", True)]
 
 
+def get_enabled_portals():
+    """Return all active job portals and aggregators."""
+    return [p for p in JOB_PORTALS if p.get("enabled", True)]
+
+
 def get_sources_by_type(source_type: str):
     """Filter sources by sector type."""
-    return [s for s in BANKS if s.get("type") == source_type and s.get("enabled", True)]
+    return [s for s in ALL_SOURCES if s.get("type") == source_type and s.get("enabled", True)]
+

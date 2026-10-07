@@ -15,7 +15,7 @@ from datetime import date, datetime
 if sys.stdout.encoding != "utf-8":
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
 
-from config.banks import BANKS
+from config.banks import BANKS, ALL_SOURCES
 from storage.database import Database
 from utils.date_parser import parse_deadline, is_job_expired
 
@@ -92,9 +92,9 @@ def export_all():
             "apply_url": apply_url,
         })
 
-    # Prepare bank directory
+    # Prepare bank directory including all scheduled banks, NBFIs and major portals
     export_banks = []
-    for b in BANKS:
+    for b in ALL_SOURCES:
         export_banks.append({
             "name": b["name"],
             "short_name": b.get("short_name", ""),
@@ -108,7 +108,7 @@ def export_all():
         "generated_at": datetime.now().isoformat(),
         "today": today.isoformat(),
         "total_active_jobs": len(export_jobs),
-        "total_monitored_institutions": len(BANKS),
+        "total_monitored_institutions": len(ALL_SOURCES),
         "monitoring_frequency": "Every 30 Minutes",
         "bot_access_mode": db.get_access_mode(),
         "jobs": export_jobs,

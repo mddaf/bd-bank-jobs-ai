@@ -63,6 +63,8 @@ from config.banks import BANKS, ALL_SOURCES
 from storage.database import Database
 from scrapers.bb_erecruitment_scraper import BBErecruitmentScraper
 from scrapers.career_page_scraper import CareerPageScraper
+from scrapers.bdjobs_scraper import BdjobsScraper
+from scrapers.portal_scraper import PortalScraper
 from ai.job_analyzer import JobAnalyzer
 from notifiers.telegram_bot import TelegramNotifier
 
@@ -679,7 +681,7 @@ async def scan_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         # Step 2: All 105+ Bank Career Pages & NBFIs
         await status_msg.edit_text(
-            f"⏳ <b>[2/4]</b> 🏦 <i>BB e-Recruitment checked ({len(bb_jobs)} circulars). Scanning 104+ banks & NBFIs in parallel...</i>",
+            f"⏳ <b>[2/5]</b> 🏦 <i>BB e-Recruitment checked ({len(bb_jobs)} circulars). Scanning 104+ banks & NBFIs in parallel...</i>",
             parse_mode=ParseMode.HTML,
         )
 
@@ -691,10 +693,24 @@ async def scan_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if db.insert_job(j) is not None:
                 total_career_new += 1
 
-        # Step 3: AI Analysis
-        total_new = new_bb + total_career_new
+        # Step 3: All 5 Modern Job Portals & Aggregators (Bdjobs, LinkedIn, BDJobsToday, Chakrir Khobor, Skill Jobs)
         await status_msg.edit_text(
-            f"⏳ <b>[3/4]</b> 🧠 <i>Scraping complete ({total_new} new jobs found). Running Gemini AI analysis...</i>",
+            f"⏳ <b>[3/5]</b> 🌐 <i>Bank careers scanned ({total_career_new} new). Checking 5 Portals (Bdjobs, LinkedIn, BDJobsToday, Chakrir Khobor, Skill Jobs)...</i>",
+            parse_mode=ParseMode.HTML,
+        )
+
+        bdjobs_scraper = BdjobsScraper()
+        portal_scraper = PortalScraper()
+        portal_jobs = await asyncio.to_thread(lambda: bdjobs_scraper.scrape_all_categories() + portal_scraper.scrape_all_portals())
+        total_portal_new = 0
+        for j in portal_jobs:
+            if db.insert_job(j) is not None:
+                total_portal_new += 1
+
+        # Step 4: AI Analysis
+        total_new = new_bb + total_career_new + total_portal_new
+        await status_msg.edit_text(
+            f"⏳ <b>[4/5]</b> 🧠 <i>Scraping complete ({total_new} new jobs found). Running Gemini AI analysis...</i>",
             parse_mode=ParseMode.HTML,
         )
 
@@ -708,9 +724,9 @@ async def scan_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     db.update_job_ai_analysis(j["id"], analysis)
             analyzed_count = len(results)
 
-        # Step 4: Notifications
+        # Step 5: Notifications
         await status_msg.edit_text(
-            f"⏳ <b>[4/4]</b> 📬 <i>AI analysis complete ({analyzed_count} analyzed). Delivering notifications...</i>",
+            f"⏳ <b>[5/5]</b> 📬 <i>AI analysis complete ({analyzed_count} analyzed). Delivering notifications...</i>",
             parse_mode=ParseMode.HTML,
         )
 
@@ -728,6 +744,7 @@ async def scan_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
             f"• 🏛️ <b>Govt Bank Circulars (BB BSCS):</b> {len(bb_jobs)} active\n"
             f"• 🏦 <b>Bank Career Pages Scanned:</b> {len(sources)} institutions\n"
+            f"• 🌐 <b>Job Portals & Aggregators:</b> Bdjobs, LinkedIn, BDJobsToday, Chakrir Khobor, Skill Jobs ({len(portal_jobs)} verified)\n"
             f"• 🆕 <b>New Jobs Discovered:</b> {total_new}\n"
             f"• 🧠 <b>Jobs Analyzed by AI:</b> {analyzed_count}\n"
             f"• 📢 <b>Notifications Delivered:</b> {sent_count}\n\n"
@@ -1586,6 +1603,15 @@ async def periodic_monitoring_task(app: Application):
                 if db.insert_job(j) is not None:
                     new_count += 1
 
+            # 3b. Scrape ALL 5 Modern Job Portals & Aggregators (Bdjobs, LinkedIn, BDJobsToday, Chakrir Khobor, Skill Jobs)
+            logger.info("[AUTO-MONITOR] Scraping 5 major portals & circular aggregators...")
+            bdjobs_scraper = BdjobsScraper()
+            portal_scraper = PortalScraper()
+            portal_jobs = await asyncio.to_thread(lambda: bdjobs_scraper.scrape_all_categories() + portal_scraper.scrape_all_portals())
+            for j in portal_jobs:
+                if db.insert_job(j) is not None:
+                    new_count += 1
+
             # 4. Immediate post-scrape purge of any expired or duplicate jobs
             db.cleanup_expired_jobs()
             db.cleanup_duplicates()
@@ -1597,7 +1623,7 @@ async def periodic_monitoring_task(app: Application):
             except Exception as ex:
                 logger.warning(f"Failed to export web data: {ex}")
 
-            logger.info(f"[AUTO-MONITOR] Scan completed: {new_count} new circulars inserted across 105+ sources.")
+            logger.info(f"[AUTO-MONITOR] Scan completed: {new_count} new circulars inserted across 105+ banks & 5 major portals.")
 
             # 4. AI Analysis on newly discovered jobs
             unanalyzed = db.get_unanalyzed_jobs()
@@ -1616,14 +1642,28 @@ async def periodic_monitoring_task(app: Application):
                 for j in unnotified:
                     card = telegram_notifier.format_job_message(j)
                     if chat_id:
-                        await app.bot.send_message(
-                            chat_id=chat_id,
-                            text=card,
-                            parse_mode=ParseMode.HTML,
-                            disable_web_page_preview=False,
-                        )
-                        db.mark_as_notified(j["id"])
-                        await asyncio.sleep(0.5)
+                        for attempt in range(3):
+                            try:
+                                await app.bot.send_message(
+                                    chat_id=chat_id,
+                                    text=card,
+                                    parse_mode=ParseMode.HTML,
+                                    disable_web_page_preview=False,
+                                )
+                                db.mark_as_notified(j["id"])
+                                break
+                            except Exception as em:
+                                if "Flood control" in str(em) or "RetryAfter" in str(em):
+                                    wait_s = 25
+                                    if hasattr(em, "retry_after"):
+                                        wait_s = int(em.retry_after) + 2
+                                    logger.warning(f"Telegram rate limited: pausing {wait_s}s...")
+                                    await asyncio.sleep(wait_s)
+                                else:
+                                    logger.warning(f"Broadcast error for job {j['id']}: {em}")
+                                    db.mark_as_notified(j["id"])
+                                    break
+                        await asyncio.sleep(1.2)
 
         except Exception as e:
             logger.error(f"[AUTO-MONITOR] Error during periodic scan: {e}", exc_info=True)

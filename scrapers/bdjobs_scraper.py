@@ -2,189 +2,170 @@
 bdjobs.com Scraper
 ====================
 Specialized scraper for bdjobs.com — the largest job portal in Bangladesh.
-Focuses on the Bank/Non-Bank Financial Institution category.
+Uses bdjobs.com's high-speed JSON Search API with multi-keyword targeting,
+falling back to HTML card parsing if the API is temporarily unreachable.
 """
 
 import re
 import logging
+from typing import List, Dict, Optional
+import urllib3
+import requests
 from bs4 import BeautifulSoup
 from scrapers.base_scraper import BaseScraper
 
+urllib3.disable_warnings()
 logger = logging.getLogger(__name__)
 
 
 class BdjobsScraper(BaseScraper):
     """
-    Scraper for bdjobs.com banking category.
-
-    bdjobs.com typically lists jobs in a structured format with:
-    - Job title link
-    - Company name
-    - Deadline
-    - Experience and education requirements
+    High-performance scraper for bdjobs.com banking & financial postings.
+    Queries official search endpoints for banking, finance, NBFI, and microfinance roles.
     """
 
-    # Multiple category URLs to cover banking jobs
-    CATEGORY_URLS = [
-        "https://jobs.bdjobs.com/jobsearch.asp?fcatId=8",   # Bank/Non-Bank Fin. Institution
-        "https://jobs.bdjobs.com/jobsearch.asp?fcatId=14",  # Financial Institution/Market
+    API_URL = "https://api.bdjobs.com/Jobs/api/JobSearch/GetJobSearch"
+
+    # Targeted search keywords to cover all bank & financial institution jobs
+    SEARCH_KEYWORDS = ["bank", "banking", "financial", "NBFI", "microfinance"]
+
+    # Keywords to ensure job relevance
+    BANKING_KEYWORDS = [
+        "bank", "banking", "nbfi", "financial", "finance", "credit", "loan",
+        "investment", "treasury", "microfinance", "insurance", "capital",
+        "securities", "asset", "branch", "cash", "remittance", "compliance",
+        "auditor", "audit", "aml", "cft", "ব্যাংক", "অর্থ", "বিনিয়োগ", "ঋণ"
     ]
 
-    def scrape_all_categories(self) -> list:
-        """Scrape all banking-related categories from bdjobs.com."""
+    def scrape_all_categories(self) -> List[Dict]:
+        """Scrape all banking-related jobs from bdjobs.com."""
         all_jobs = []
-        seen_urls = set()
+        seen_job_ids = set()
 
-        for url in self.CATEGORY_URLS:
-            source_config = {
-                "name": "bdjobs.com",
-                "short_name": "BDJOBS",
-                "type": "job_portal",
-                "career_url": url,
-                "scrape_config": {},
-            }
+        # Step 1: Use official Bdjobs Search API
+        for keyword in self.SEARCH_KEYWORDS:
+            try:
+                params = {
+                    "keyword": keyword,
+                    "rpp": 50,
+                    "pg": 1,
+                    "isPro": 0,
+                    "ToggleJobs": "true",
+                    "isFresher": "false",
+                }
+                headers = self._get_headers()
+                response = self.session.get(
+                    self.API_URL,
+                    params=params,
+                    headers=headers,
+                    timeout=10,
+                    verify=False,
+                )
 
-            html = self.fetch(url)
-            if html:
-                jobs = self.parse(html, source_config)
-                for job in jobs:
-                    if job["url"] not in seen_urls:
-                        seen_urls.add(job["url"])
-                        all_jobs.append(job)
+                if response.status_code == 200:
+                    data = response.json()
+                    jobs_data = data.get("data", []) + (data.get("premiumData") or [])
+                    for item in jobs_data:
+                        jid = str(item.get("Jobid") or "").strip()
+                        if not jid or jid in seen_job_ids:
+                            continue
 
-        logger.info(f"Total unique jobs from bdjobs.com: {len(all_jobs)}")
+                        title = item.get("jobTitle") or ""
+                        company = item.get("companyName") or "Bank/Financial Institution"
+                        
+                        # Filter to only keep relevant banking/financial jobs
+                        if not self._is_banking_related(title, company):
+                            continue
+
+                        seen_job_ids.add(jid)
+                        deadline = item.get("deadline") or None
+                        url = f"https://jobs.bdjobs.com/jobdetails/?id={jid}"
+                        desc = item.get("jobDescription") or item.get("eduRec") or ""
+                        location = item.get("location") or ""
+                        vacancies = item.get("Vacancies")
+
+                        description_parts = []
+                        if location:
+                            description_parts.append(f"Location: {location}")
+                        if vacancies:
+                            description_parts.append(f"Vacancies: {vacancies}")
+                        if desc:
+                            description_parts.append(desc.strip())
+
+                        full_desc = " | ".join(description_parts)[:600]
+
+                        all_jobs.append({
+                            "title": self._clean_text(title),
+                            "organization": self._clean_text(company),
+                            "url": url,
+                            "deadline": self._clean_text(deadline) if deadline else None,
+                            "description": full_desc,
+                            "raw_html": str(item)[:1500],
+                            "source": "BDJOBS",
+                            "source_type": "job_portal",
+                        })
+            except Exception as e:
+                logger.warning(f"Bdjobs API search failed for keyword '{keyword}': {e}")
+
+        # Step 2: Fallback to HTML scraping if API returned nothing
+        if not all_jobs:
+            logger.info("Bdjobs API returned 0 jobs, trying HTML fallback...")
+            all_jobs = self._scrape_html_fallback()
+
+        logger.info(f"Total verified jobs extracted from bdjobs.com: {len(all_jobs)}")
         return all_jobs
 
-    def parse(self, html: str, source_config: dict) -> list:
+    def _scrape_html_fallback(self) -> List[Dict]:
+        """Fallback to HTML scraping if API is unreachable."""
+        fallback_urls = [
+            "https://jobs.bdjobs.com/jobsearch.asp?fcatId=2",
+            "https://jobs.bdjobs.com/jobsearch.asp?fcatId=8",
+        ]
+        jobs = []
+        for url in fallback_urls:
+            html = self.fetch(url)
+            if html:
+                parsed = self.parse(html, {"career_url": url})
+                jobs.extend(parsed)
+        return jobs
+
+    def parse(self, html: str, source_config: dict) -> List[Dict]:
         """Parse bdjobs.com search results page."""
         soup = BeautifulSoup(html, "html5lib")
         base_url = source_config.get("career_url", "https://jobs.bdjobs.com")
         jobs = []
 
-        # Strategy 1: Look for structured job listing blocks
-        # bdjobs.com uses various container classes over time
-        job_containers = soup.select(
-            ".job-list-container .job-item, "
-            ".norm, "
-            ".topjob-block, "
-            ".featured-block, "
-            "table.job-list-table tbody tr, "
-            ".job_list_row, "
-            "div[class*='job']"
-        )
-
-        for container in job_containers:
-            job = self._extract_bdjobs_listing(container, base_url)
-            if job:
-                jobs.append(job)
-
-        # Strategy 2: If structured parsing fails, look for all job links
-        if not jobs:
-            logger.info("Structured bdjobs parsing failed, trying link extraction...")
-            jobs = self._extract_from_links(soup, base_url)
-
-        return jobs
-
-    def _extract_bdjobs_listing(self, container, base_url: str) -> dict:
-        """Extract job details from a bdjobs.com listing container."""
-        # Find the job title link
-        title_link = None
-        for selector in ["a.title", ".job-title a", "a[href*='jobdetails']", "a[href*='JobId']", "a"]:
-            title_link = container.select_one(selector)
-            if title_link and title_link.get("href"):
-                break
-
-        if not title_link:
-            return None
-
-        title = title_link.get_text(strip=True)
-        href = title_link.get("href", "")
-
-        if not title or len(title) < 3:
-            return None
-
-        url = self.make_absolute_url(base_url, href)
-
-        # Extract company name
-        company = "Unknown"
-        for selector in [".comp-name", ".company-name", ".comp_name", "span.company"]:
-            comp_el = container.select_one(selector)
-            if comp_el:
-                company = comp_el.get_text(strip=True)
-                break
-
-        # If company not found, check for text near the title
-        if company == "Unknown":
-            all_text = container.get_text(" ", strip=True)
-            # Sometimes company name is in parentheses or after a separator
-            parts = re.split(r'[|\-–]', all_text)
-            if len(parts) > 1:
-                potential_company = parts[1].strip()
-                if len(potential_company) > 3 and len(potential_company) < 100:
-                    company = potential_company
-
-        # Extract deadline
-        deadline = None
-        for selector in [".job-deadline", ".dead-line", ".deadline", "span[class*='dead']"]:
-            deadline_el = container.select_one(selector)
-            if deadline_el:
-                deadline = deadline_el.get_text(strip=True)
-                break
-
-        # Filter: only keep banking/finance related jobs
-        if not self._is_banking_related(title, company):
-            return None
-
-        return {
-            "title": self._clean_text(title),
-            "organization": self._clean_text(company),
-            "url": url,
-            "deadline": self._clean_text(deadline) if deadline else None,
-            "description": self._clean_text(container.get_text(" ", strip=True))[:500],
-            "raw_html": str(container)[:2000],
-            "source": "BDJOBS",
-            "source_type": "job_portal",
-        }
-
-    def _extract_from_links(self, soup: BeautifulSoup, base_url: str) -> list:
-        """Fallback: extract jobs from links containing job-related patterns."""
-        jobs = []
-
-        for link in soup.find_all("a", href=re.compile(r"jobdetails|JobId|job_id", re.IGNORECASE)):
+        # Find any job links in HTML
+        for link in soup.find_all("a", href=re.compile(r"jobdetails|JobId|job_id|details", re.I)):
             title = link.get_text(strip=True)
             href = link.get("href", "")
 
-            if not title or len(title) < 5:
+            if not title or len(title) < 4:
                 continue
 
             url = self.make_absolute_url(base_url, href)
+            parent_text = link.parent.get_text(" ", strip=True) if link.parent else ""
 
-            jobs.append({
-                "title": self._clean_text(title),
-                "organization": "Via bdjobs.com",
-                "url": url,
-                "deadline": None,
-                "description": None,
-                "raw_html": str(link.parent)[:2000] if link.parent else str(link),
-                "source": "BDJOBS",
-                "source_type": "job_portal",
-            })
+            if self._is_banking_related(title, parent_text):
+                jobs.append({
+                    "title": self._clean_text(title),
+                    "organization": "Via bdjobs.com",
+                    "url": url,
+                    "deadline": None,
+                    "description": parent_text[:500],
+                    "raw_html": str(link.parent)[:1500] if link.parent else str(link),
+                    "source": "BDJOBS",
+                    "source_type": "job_portal",
+                })
 
         return jobs
 
     def _is_banking_related(self, title: str, company: str) -> bool:
         """Check if a job listing is related to banking/finance."""
-        banking_keywords = [
-            "bank", "finance", "financial", "credit", "loan",
-            "investment", "treasury", "banking", "microfinance",
-            "insurance", "capital", "securities", "asset",
-            "ব্যাংক", "অর্থ", "বিনিয়োগ", "ঋণ",
-        ]
-
         combined = f"{title} {company}".lower()
-        return any(kw in combined for kw in banking_keywords)
+        return any(kw in combined for kw in self.BANKING_KEYWORDS)
 
-    def _clean_text(self, text: str) -> str:
+    def _clean_text(self, text: Optional[str]) -> str:
         """Clean extracted text."""
         if not text:
             return ""
