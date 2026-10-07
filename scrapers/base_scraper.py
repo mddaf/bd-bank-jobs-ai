@@ -57,67 +57,38 @@ class BaseScraper(ABC):
         }
 
     def _rate_limit(self):
-        """Enforce delay between requests to be respectful."""
+        """Enforce minimal delay between requests to prevent socket flooding."""
         elapsed = time.time() - self._last_request_time
-        delay = random.uniform(MIN_DELAY_BETWEEN_REQUESTS, MAX_DELAY_BETWEEN_REQUESTS)
-        if elapsed < delay:
-            wait_time = delay - elapsed
-            logger.debug(f"Rate limiting: waiting {wait_time:.1f}s")
-            time.sleep(wait_time)
+        if elapsed < 0.1:
+            time.sleep(0.1 - elapsed)
         self._last_request_time = time.time()
 
     def fetch(self, url: str) -> Optional[str]:
         """
-        Fetch a URL with retry logic, rate limiting, and error handling.
-        Returns the HTML content as string, or None on failure.
+        Fetch a URL with fast timeout, auto-encoding, and graceful error handling.
+        Returns HTML string on success, or None on failure.
         """
-        for attempt in range(1, MAX_RETRIES + 1):
-            try:
-                self._rate_limit()
+        try:
+            self._rate_limit()
+            import urllib3
+            urllib3.disable_warnings()
 
-                logger.info(f"Fetching [{attempt}/{MAX_RETRIES}]: {url}")
-                import urllib3
-                urllib3.disable_warnings()
+            response = self.session.get(
+                url,
+                headers=self._get_headers(),
+                timeout=6,
+                allow_redirects=True,
+                verify=False,
+            )
+            if response.status_code != 200:
+                logger.debug(f"HTTP {response.status_code} for {url}")
+                return None
 
-                response = self.session.get(
-                    url,
-                    headers=self._get_headers(),
-                    timeout=REQUEST_TIMEOUT,
-                    allow_redirects=True,
-                    verify=False,
-                )
-                response.raise_for_status()
-
-                # Handle encoding
-                response.encoding = response.apparent_encoding or "utf-8"
-                logger.info(f"Successfully fetched: {url} ({len(response.text)} chars)")
-                return response.text
-
-            except requests.exceptions.Timeout:
-                logger.warning(f"Timeout fetching {url} (attempt {attempt}/{MAX_RETRIES})")
-            except requests.exceptions.ConnectionError:
-                logger.warning(f"Connection error for {url} (attempt {attempt}/{MAX_RETRIES})")
-            except requests.exceptions.HTTPError as e:
-                logger.warning(f"HTTP {e.response.status_code} for {url} (attempt {attempt}/{MAX_RETRIES})")
-                if e.response.status_code in (403, 429):
-                    # Blocked or rate limited — longer backoff
-                    time.sleep(random.uniform(5, 15))
-                elif e.response.status_code >= 500:
-                    time.sleep(random.uniform(3, 8))
-                else:
-                    break  # Client error, don't retry
-            except requests.exceptions.RequestException as e:
-                logger.error(f"Request error for {url}: {e}")
-                break
-
-            # Exponential backoff between retries
-            if attempt < MAX_RETRIES:
-                backoff = min(2 ** attempt + random.uniform(0, 1), 30)
-                logger.debug(f"Retrying in {backoff:.1f}s...")
-                time.sleep(backoff)
-
-        logger.error(f"Failed to fetch {url} after {MAX_RETRIES} attempts")
-        return None
+            response.encoding = response.apparent_encoding or "utf-8"
+            return response.text
+        except Exception as e:
+            logger.debug(f"Error fetching {url}: {e}")
+            return None
 
     @abstractmethod
     def parse(self, html: str, source_config: dict) -> list:

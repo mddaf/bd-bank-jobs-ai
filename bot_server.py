@@ -1,24 +1,21 @@
 """
-Interactive Telegram Bot Server
-================================
-Features:
-  /start       - Welcome & interactive quick menu
+Interactive Telegram Bot Server & 30-Minute Autonomous Monitor
+==============================================================
+Commands (Clean & Deduplicated):
+  /fetchall    - Retrieve & deliver ALL circulars from database (restores chat history)
+  /latest      - 5 most recent verified banking circulars
   /categories  - One-tap category browser with live counts (Govt, IT, Engineering, Law, etc.)
-  /search      - Instant search or quick-search chips
-  /filter      - Filter by sector or discipline
-  /latest      - 5 most recent banking circulars
-  /all         - Browse all jobs in database with interactive pagination buttons
-  /banks       - View all 105+ monitored banks and institutions
-  /resend      - Re-broadcast latest job alert cards to the chat
-  /stats       - View database and monitoring statistics
-  /check       - Run live scan with real-time multi-step progress indicator
-  /help        - Complete guide
+  /search      - Search by keyword or tap quick-search chips
+  /scan        - Trigger live scan now across all 105+ institutions with progress bar
+  /banks       - View complete directory of 105+ monitored banks & NBFIs
+  /stats       - View database & monitoring metrics
+  /help        - Command guide & instructions
 
-Interactive Features:
-  - Inline buttons for categories, sectors, and cadres
-  - Interactive pagination buttons for browsing all jobs
-  - Quick-search chips for one-tap searching
-  - Natural text search: type any job keyword directly into chat without slashes!
+Autonomous Features:
+  - 30-Minute Monitoring Engine: automatically checks BB BSCS + all 105+ banks & NBFIs
+  - Automated Smart Deletion: purges expired jobs and blacklists them permanently
+  - Cross-Source Deduplication: merges duplicate circulars while preserving cadres
+  - Broadcast Engine: automatically sends any new circulars to Telegram
 """
 
 import sys
@@ -53,12 +50,11 @@ logging.basicConfig(
 )
 logger = logging.getLogger("bot_server")
 
-from config.settings import TELEGRAM_BOT_TOKEN
+from config.settings import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
 from config.banks import BANKS, ALL_SOURCES
 from storage.database import Database
 from scrapers.bb_erecruitment_scraper import BBErecruitmentScraper
 from scrapers.career_page_scraper import CareerPageScraper
-from scrapers.bdjobs_scraper import BdjobsScraper
 from ai.job_analyzer import JobAnalyzer
 from notifiers.telegram_bot import TelegramNotifier
 
@@ -67,7 +63,7 @@ telegram_notifier = TelegramNotifier()
 
 
 def get_category_keyboard() -> InlineKeyboardMarkup:
-    """Build interactive one-tap category selection keyboard with live counts."""
+    """Build interactive one-tap category selection keyboard with live vacancy counts."""
     counts = db.get_category_counts()
     kb = [
         [
@@ -91,7 +87,7 @@ def get_category_keyboard() -> InlineKeyboardMarkup:
             InlineKeyboardButton(f"👔 Officers & Cadre ({counts.get('officer', 0)})", callback_data="cat:officer"),
         ],
         [
-            InlineKeyboardButton(f"📚 All Active Jobs ({counts.get('total', 0)})", callback_data="page:1"),
+            InlineKeyboardButton(f"📚 All Active Circulars ({counts.get('total', 0)})", callback_data="menu:fetchall"),
             InlineKeyboardButton("🔍 Quick Search", callback_data="menu:search"),
         ],
     ]
@@ -118,28 +114,10 @@ def get_search_keyboard() -> InlineKeyboardMarkup:
         ],
         [
             InlineKeyboardButton("📂 Browse Categories", callback_data="menu:categories"),
-            InlineKeyboardButton("📚 Browse All Jobs", callback_data="page:1"),
+            InlineKeyboardButton("📚 Fetch All Circulars", callback_data="menu:fetchall"),
         ],
     ]
     return InlineKeyboardMarkup(kb)
-
-
-def get_pagination_keyboard(page: int, total_pages: int) -> InlineKeyboardMarkup:
-    """Build interactive next/prev pagination buttons."""
-    buttons = []
-    nav_row = []
-    if page > 1:
-        nav_row.append(InlineKeyboardButton("◀️ Previous", callback_data=f"page:{page - 1}"))
-    nav_row.append(InlineKeyboardButton(f"📄 {page} / {total_pages}", callback_data="menu:noop"))
-    if page < total_pages:
-        nav_row.append(InlineKeyboardButton("Next ▶️", callback_data=f"page:{page + 1}"))
-    buttons.append(nav_row)
-
-    buttons.append([
-        InlineKeyboardButton("📂 Categories", callback_data="menu:categories"),
-        InlineKeyboardButton("🔍 Search", callback_data="menu:search"),
-    ])
-    return InlineKeyboardMarkup(buttons)
 
 
 async def send_msg(
@@ -170,46 +148,71 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🏦 <b>Bangladesh Bank & Financial Sector Job Monitor</b>\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
         "Autonomous monitoring of <b>105+ banks & financial institutions</b> across Bangladesh:\n"
-        "• 🏛️ <b>Govt & Central Bank (9):</b> Bangladesh Bank (BSCS), Sonali, Janata, Agrani, Rupali, BASIC, BDBL, BKB, RAKUB, PKB\n"
+        "• 🏛️ <b>Govt & Central Bank:</b> Bangladesh Bank (BSCS), Sonali, Janata, Agrani, Rupali, BASIC, BDBL, BKB, RAKUB, PKB\n"
         "• 🏢 <b>Private Commercial (33):</b> BRAC, City, EBL, MTB, Prime, Bank Asia, DBBL, IFIC, Jamuna, etc.\n"
         "• 🕌 <b>Islami Shariah (10):</b> IBBL, Al-Arafah, SIBL, SJIBL, EXIM, Union, Global Islami, etc.\n"
         "• 🌍 <b>Foreign & Digital (11):</b> Standard Chartered, HSBC, Woori, Nagad Digital, Kori Digital, etc.\n"
         "• 💼 <b>NBFIs (35):</b> IDLC, IPDC, LankaBangla, DBH, United Finance, IDCOL, etc.\n"
         "• 🌐 <b>Portals:</b> Bangladesh Bank e-Recruitment, Bdjobs, Skill Jobs\n\n"
+        "⏱️ <i>Scans automatically every 30 minutes in the background!</i>\n\n"
         "👇 <b>Select an option below to get started:</b>"
     )
     await send_msg(update, context, welcome, reply_markup=get_category_keyboard())
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /help command."""
+    """Handle /help command with clear, deduplicated guide."""
     help_text = (
-        "📋 <b>Bot Commands & Shortcuts:</b>\n"
+        "📋 <b>Bot Commands Guide:</b>\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        "• /categories — One-tap category browser with live vacancy counts\n"
-        "• /search [keyword] — Instant search or interactive chips\n"
-        "• /latest — 5 most recent bank circulars\n"
-        "• /all [page] — Browse all circulars with interactive next/prev buttons\n"
-        "• /filter &lt;type&gt; — Filter by sector (govt, private, islami, nbfi)\n"
+        "• /fetchall — <b>Retrieve and deliver ALL circulars</b> from database (use anytime if you deleted chat!)\n"
+        "• /latest — Show 5 most recent verified banking circulars\n"
+        "• /categories — One-tap category browser with live counts\n"
+        "• /search [keyword] — Instant search or one-click search chips\n"
+        "• /scan — Trigger live scan now across all 105+ institutions with progress updates\n"
         "• /banks — View complete directory of 105+ monitored institutions\n"
-        "• /check — Trigger instant scan with live 4-step progress updates\n"
-        "• /stats — View database & scraper statistics\n"
-        "• /resend — Re-broadcast latest alerts into the chat\n\n"
-        "💡 <b>User-Friendly Tip:</b> You can also simply type any keyword directly in the chat (e.g. <i>'civil engineer'</i>, <i>'sonali bank'</i>, <i>'audit'</i>) to search immediately!"
+        "• /stats — View database and monitoring metrics\n\n"
+        "💡 <b>Tip:</b> You can also type any keyword directly in chat (e.g., <i>'civil engineer'</i>, <i>'sonali bank'</i>, <i>'audit'</i>) to search immediately!"
     )
     await send_msg(update, context, help_text, reply_markup=get_category_keyboard())
 
 
-async def categories_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /categories command — interactive one-tap category menu."""
+async def fetchall_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Handle /fetchall (also /fetch_all, /resend_all, /all).
+    Delivers ALL active circulars from the database to restore entire chat history!
+    """
     db.cleanup_expired_jobs()
     db.cleanup_duplicates()
-    text = (
-        "📂 <b>Bank Job Categories & Sectors</b>\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        "Tap any category below to immediately view active circulars:"
+    all_jobs = db.get_all_jobs(limit=100, min_score=0.4)
+
+    if not all_jobs:
+        await send_msg(
+            update,
+            context,
+            "📭 No active circulars currently in the database. Run <code>/scan</code> to scan now!",
+            reply_markup=get_category_keyboard(),
+        )
+        return
+
+    header = (
+        f"🔄 <b>Delivering All Active Circulars from Database...</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"<i>({len(all_jobs)} verified positions currently active. Sending all cards now):</i>"
     )
-    await send_msg(update, context, text, reply_markup=get_category_keyboard())
+    await send_msg(update, context, header)
+
+    for idx, job in enumerate(all_jobs, 1):
+        card = telegram_notifier.format_job_message(job)
+        await send_msg(update, context, card, disable_preview=False)
+        await asyncio.sleep(0.4)  # Rate limit protection
+
+    footer = (
+        f"✅ <b>Delivered all {len(all_jobs)} active circulars!</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"<i>All 105+ banks & financial institutions are monitored every 30 minutes.</i>"
+    )
+    await send_msg(update, context, footer, reply_markup=get_category_keyboard())
 
 
 async def latest_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -221,7 +224,7 @@ async def latest_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await send_msg(
             update,
             context,
-            "📭 No active jobs found in database. Run <code>/check</code> to scan now!",
+            "📭 No active jobs found in database. Run <code>/scan</code> to scan now!",
             reply_markup=get_category_keyboard(),
         )
         return
@@ -235,60 +238,23 @@ async def latest_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     nav_kb = InlineKeyboardMarkup([
         [
+            InlineKeyboardButton("📚 Fetch All Circulars", callback_data="menu:fetchall"),
             InlineKeyboardButton("📂 Browse Categories", callback_data="menu:categories"),
-            InlineKeyboardButton("📚 Browse All Jobs", callback_data="page:1"),
         ]
     ])
-    await send_msg(update, context, "👉 <i>Need more? Browse by category or search below:</i>", reply_markup=nav_kb)
+    await send_msg(update, context, "👉 <i>Need all circulars or more categories?</i>", reply_markup=nav_kb)
 
 
-async def all_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /all [page] — retrieve all verified jobs with interactive pagination."""
+async def categories_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /categories command — interactive one-tap category menu."""
     db.cleanup_expired_jobs()
     db.cleanup_duplicates()
-    page = 1
-    if context.args:
-        try:
-            page = max(1, int(context.args[0]))
-        except ValueError:
-            page = 1
-
-    await display_jobs_page(update, context, page)
-
-
-async def display_jobs_page(update: Update, context: ContextTypes.DEFAULT_TYPE, page: int):
-    """Display a specific page of jobs with interactive pagination buttons."""
-    page_size = 5
-    offset = (page - 1) * page_size
-    total_jobs = db.get_job_count()
-    jobs = db.get_all_jobs(limit=page_size, offset=offset, min_score=0.4)
-
-    if not jobs:
-        total_pages = max(1, (total_jobs + page_size - 1) // page_size)
-        await send_msg(
-            update,
-            context,
-            f"📭 No active jobs found on page {page}. (Total pages: {total_pages}).",
-            reply_markup=get_pagination_keyboard(1, total_pages),
-        )
-        return
-
-    total_pages = max(1, (total_jobs + page_size - 1) // page_size)
-    header = (
-        f"📚 <b>Active Banking Circulars — Page {page} of {total_pages}</b>\n"
-        f"<i>({total_jobs} active circulars monitored)</i>\n"
-        "───────────────────────────"
+    text = (
+        "📂 <b>Bank Job Categories & Disciplines</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "Tap any category below to immediately view active circulars:"
     )
-    await send_msg(update, context, header)
-
-    for job in jobs:
-        card = telegram_notifier.format_job_message(job)
-        await send_msg(update, context, card, disable_preview=False)
-        await asyncio.sleep(0.3)
-
-    # Attach interactive navigation buttons
-    kb = get_pagination_keyboard(page, total_pages)
-    await send_msg(update, context, f"<b>Page {page} of {total_pages} Navigation:</b>", reply_markup=kb)
+    await send_msg(update, context, text, reply_markup=get_category_keyboard())
 
 
 async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -301,7 +267,7 @@ async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "🔍 <b>Quick Bank Job Search</b>\n"
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
             "Tap any quick-search chip below, or type: <code>/search &lt;query&gt;</code>\n\n"
-            "💬 <i>You can also simply type any word directly in this chat!</i>"
+            "💬 <i>You can also simply type any keyword directly in this chat!</i>"
         )
         await send_msg(update, context, prompt, reply_markup=get_search_keyboard())
         return
@@ -319,7 +285,7 @@ async def execute_search(update: Update, context: ContextTypes.DEFAULT_TYPE, key
             update,
             context,
             f"🔍 No active bank circulars found matching '<b>{html.escape(keyword)}</b>'.\n\n"
-            "Try one of the quick categories below:",
+            "Try one of the active categories below:",
             reply_markup=get_category_keyboard(),
         )
         return
@@ -340,42 +306,148 @@ async def execute_search(update: Update, context: ContextTypes.DEFAULT_TYPE, key
     await send_msg(update, context, "👉 <i>Explore more circulars:</i>", reply_markup=nav_kb)
 
 
-async def filter_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /filter <type> (govt, private, islami, nbfi, engineering, etc.)."""
-    db.cleanup_expired_jobs()
-    db.cleanup_duplicates()
+async def scan_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /scan (or /check) — on-demand scrape with live progress indication."""
+    chat_id = update.effective_chat.id if update.effective_chat else update.message.chat_id
+    status_msg = await context.bot.send_message(
+        chat_id=chat_id,
+        text="⏳ <b>[1/4]</b> 🏛️ <i>Connecting to Bangladesh Bank Central e-Recruitment (BSCS)...</i>",
+        parse_mode=ParseMode.HTML,
+    )
 
-    if not context.args:
-        await categories_command(update, context)
-        return
+    try:
+        # Step 1: Bangladesh Bank e-Recruitment
+        bb_scraper = BBErecruitmentScraper()
+        bb_jobs = await asyncio.to_thread(bb_scraper.scrape_jobs)
+        new_bb = 0
+        for j in bb_jobs:
+            if db.insert_job(j) is not None:
+                new_bb += 1
 
-    filter_type = context.args[0].lower().strip()
-    jobs = db.get_jobs_by_category_tag(filter_type, limit=5)
-
-    if not jobs:
-        await send_msg(
-            update,
-            context,
-            f"📭 No active jobs found for filter '<b>{html.escape(filter_type)}</b>'.\n"
-            "Please select from active categories below:",
-            reply_markup=get_category_keyboard(),
+        # Step 2: All 105+ Bank Career Pages & NBFIs
+        await status_msg.edit_text(
+            f"⏳ <b>[2/4]</b> 🏦 <i>BB e-Recruitment checked ({len(bb_jobs)} circulars). Scanning 104+ banks & NBFIs in parallel...</i>",
+            parse_mode=ParseMode.HTML,
         )
-        return
 
-    await send_msg(update, context, f"🏷️ <b>Filter results for '{html.escape(filter_type.upper())}' ({len(jobs)} circulars):</b>")
+        career_scraper = CareerPageScraper()
+        sources = [s for s in BANKS if s.get("short_name") != "BB_BSCS" and s.get("enabled", True)]
+        bank_jobs = await asyncio.to_thread(career_scraper.scrape_all_concurrent, sources, 15)
+        total_career_new = 0
+        for j in bank_jobs:
+            if db.insert_job(j) is not None:
+                total_career_new += 1
 
-    for job in jobs:
-        card = telegram_notifier.format_job_message(job)
-        await send_msg(update, context, card, disable_preview=False)
-        await asyncio.sleep(0.3)
+        # Step 3: AI Analysis
+        total_new = new_bb + total_career_new
+        await status_msg.edit_text(
+            f"⏳ <b>[3/4]</b> 🧠 <i>Scraping complete ({total_new} new jobs found). Running Gemini AI analysis...</i>",
+            parse_mode=ParseMode.HTML,
+        )
 
-    nav_kb = InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton("📂 Other Categories", callback_data="menu:categories"),
-            InlineKeyboardButton("🔍 Search Jobs", callback_data="menu:search"),
-        ]
-    ])
-    await send_msg(update, context, "👉 <i>Filter another sector:</i>", reply_markup=nav_kb)
+        unanalyzed = db.get_unanalyzed_jobs()
+        analyzed_count = 0
+        if unanalyzed:
+            analyzer = JobAnalyzer()
+            results = await asyncio.to_thread(analyzer.analyze_batch, unanalyzed)
+            for j, analysis in results:
+                if analysis:
+                    db.update_job_ai_analysis(j["id"], analysis)
+            analyzed_count = len(results)
+
+        # Step 4: Notifications
+        await status_msg.edit_text(
+            f"⏳ <b>[4/4]</b> 📬 <i>AI analysis complete ({analyzed_count} analyzed). Delivering notifications...</i>",
+            parse_mode=ParseMode.HTML,
+        )
+
+        unnotified = db.get_unnotified_jobs(min_relevance_score=0.4)
+        sent_count = 0
+        for j in unnotified:
+            card = telegram_notifier.format_job_message(j)
+            await send_msg(update, context, card, disable_preview=False)
+            db.mark_as_notified(j["id"])
+            sent_count += 1
+            await asyncio.sleep(0.4)
+
+        summary_text = (
+            f"✅ <b>Live Scan Complete!</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"• 🏛️ <b>Govt Bank Circulars (BB BSCS):</b> {len(bb_jobs)} active\n"
+            f"• 🏦 <b>Bank Career Pages Scanned:</b> {len(sources)} institutions\n"
+            f"• 🆕 <b>New Jobs Discovered:</b> {total_new}\n"
+            f"• 🧠 <b>Jobs Analyzed by AI:</b> {analyzed_count}\n"
+            f"• 📢 <b>Notifications Delivered:</b> {sent_count}\n\n"
+            f"👉 Type <code>/fetchall</code> to view all circulars anytime!"
+        )
+        await status_msg.edit_text(summary_text, parse_mode=ParseMode.HTML)
+
+    except Exception as e:
+        logger.error(f"Error during on-demand check: {e}", exc_info=True)
+        await status_msg.edit_text(
+            f"❌ <b>Error during scan:</b> <code>{html.escape(str(e)[:250])}</code>",
+            parse_mode=ParseMode.HTML,
+        )
+
+
+async def banks_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /banks — list monitored banks and institutions."""
+    text = (
+        "🏦 <b>105+ Monitored Banks & Financial Institutions</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "🏛️ <b>Govt & Central Bank (SOCBs & SDBs):</b>\n"
+        "• Bangladesh Bank (BSCS Central Recruitment)\n"
+        "• Sonali Bank PLC, Janata Bank PLC, Agrani Bank PLC\n"
+        "• Rupali Bank PLC, BASIC Bank PLC, BDBL\n"
+        "• Bangladesh Krishi Bank (BKB), RAKUB, PKB, Ansar-VDP\n\n"
+        "🏢 <b>Private Commercial Banks (33):</b>\n"
+        "• BRAC Bank, Dutch-Bangla Bank (DBBL), Eastern Bank (EBL)\n"
+        "• The City Bank, Mutual Trust Bank (MTB), Prime Bank\n"
+        "• Bank Asia, AB Bank, Dhaka Bank, IFIC Bank, Jamuna Bank\n"
+        "• Mercantile Bank, Midland Bank, Modhumoti Bank, Meghna Bank\n"
+        "• National Bank, NCC Bank, NRB Bank, NRBC Bank, ONE Bank\n"
+        "• Padma Bank, Premier Bank, Pubali Bank, SBAC Bank\n"
+        "• Shimanto Bank, Southeast Bank, Trust Bank, UCB, Uttara Bank\n"
+        "• Bengal Commercial, Citizens Bank, Bangladesh Commerce\n\n"
+        "🕌 <b>Islamic Shariah Banks (10):</b>\n"
+        "• Islami Bank Bangladesh (IBBL), Al-Arafah, SIBL, FSIBL\n"
+        "• Shahjalal Islami (SJIBL), EXIM Bank, Union Bank\n"
+        "• Global Islami Bank, ICB Islamic Bank, Standard Bank PLC\n\n"
+        "🌍 <b>Foreign & Digital Banks (11):</b>\n"
+        "• Standard Chartered, HSBC, Woori, Ceylon, SBI, HBL, Alfalah, Citi, NBP\n"
+        "• Nagad Digital Bank, Kori Digital Bank\n\n"
+        "💼 <b>NBFIs (35 Financial Institutions):</b>\n"
+        "• IDLC, IPDC, LankaBangla, DBH, United Finance, IDCOL, BIFC, CVC\n"
+        "• Fareast, FAS, First Finance, GSP, Hajj Finance, IIDFC, ILFSL\n"
+        "• Meridian, MIDAS, National Finance, National Housing, Phoenix\n"
+        "• Premier Leasing, Prime Finance, SABINCO, SFIL, UBICO, Uttara Finance...\n\n"
+        "🌐 <b>Recruitment Portals:</b>\n"
+        "• Bangladesh Bank e-Recruitment (BSCS)\n"
+        "• bdjobs.com (Banking & NBFI categories)\n"
+        "• Skill Jobs (Banking category)\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "<i>All monitored continuously every 30 minutes!</i>"
+    )
+    await send_msg(update, context, text)
+
+
+async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /stats command."""
+    total_jobs = db.get_job_count()
+    scrape_stats = db.get_scrape_stats()
+
+    stats_msg = (
+        "📊 <b>BD Bank Job Monitor — Statistics</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"• <b>Total Active Circulars:</b> {total_jobs}\n"
+        f"• <b>Monitored Institutions:</b> {len(BANKS)} Organizations\n"
+        f"• <b>Scan Interval:</b> Every 30 Minutes (Continuous)\n"
+        f"• <b>Total Scrape Runs:</b> {scrape_stats.get('total_scrapes', 0)}\n"
+        f"• <b>Successful Scrapes:</b> {scrape_stats.get('successful', 0)}\n"
+        f"• <b>New Jobs Discovered:</b> {scrape_stats.get('total_new_jobs', 0)}\n\n"
+        "🤖 <i>Status: Fully Active & Monitoring 24/7</i>"
+    )
+    await send_msg(update, context, stats_msg)
 
 
 async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -387,9 +459,13 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
     if data == "menu:noop":
         return
 
+    if data == "menu:fetchall":
+        await fetchall_command(update, context)
+        return
+
     if data == "menu:categories":
         text = (
-            "📂 <b>Bank Job Categories & Sectors</b>\n"
+            "📂 <b>Bank Job Categories & Disciplines</b>\n"
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
             "Tap any category below to immediately view active circulars:"
         )
@@ -430,23 +506,15 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
         nav_kb = InlineKeyboardMarkup([
             [
                 InlineKeyboardButton("📂 Other Categories", callback_data="menu:categories"),
-                InlineKeyboardButton("🔍 Search Jobs", callback_data="menu:search"),
+                InlineKeyboardButton("📚 Fetch All Circulars", callback_data="menu:fetchall"),
             ]
         ])
-        await query.message.reply_text("👉 <i>Need more? Browse another category:</i>", reply_markup=nav_kb)
+        await query.message.reply_text("👉 <i>Explore more circulars:</i>", reply_markup=nav_kb)
         return
 
     if data.startswith("qsearch:"):
         term = data.split(":", 1)[1]
         await execute_search(update, context, term)
-        return
-
-    if data.startswith("page:"):
-        try:
-            page = int(data.split(":", 1)[1])
-            await display_jobs_page(update, context, page)
-        except ValueError:
-            pass
         return
 
 
@@ -460,204 +528,111 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
     if not text or text.startswith("/"):
         return
 
-    # Trigger smart search for the user's input
     logger.info(f"Natural text query received: '{text}'")
     await execute_search(update, context, text)
 
 
-async def banks_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /banks — list monitored banks and institutions."""
-    text = (
-        "🏦 <b>105+ Monitored Banks & Financial Institutions</b>\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        "🏛️ <b>Govt & Central Bank (SOCBs & SDBs):</b>\n"
-        "• Bangladesh Bank (BSCS Central Recruitment)\n"
-        "• Sonali Bank PLC, Janata Bank PLC, Agrani Bank PLC\n"
-        "• Rupali Bank PLC, BASIC Bank PLC, BDBL\n"
-        "• Bangladesh Krishi Bank (BKB), RAKUB, PKB, Ansar-VDP\n\n"
-        "🏢 <b>Private Commercial Banks (33):</b>\n"
-        "• BRAC Bank, Dutch-Bangla Bank (DBBL), Eastern Bank (EBL)\n"
-        "• The City Bank, Mutual Trust Bank (MTB), Prime Bank\n"
-        "• Bank Asia, AB Bank, Dhaka Bank, IFIC Bank, Jamuna Bank\n"
-        "• Mercantile Bank, Midland Bank, Modhumoti Bank, Meghna Bank\n"
-        "• National Bank, NCC Bank, NRB Bank, NRBC Bank, ONE Bank\n"
-        "• Padma Bank, Premier Bank, Pubali Bank, SBAC Bank\n"
-        "• Shimanto Bank, Southeast Bank, Trust Bank, UCB, Uttara Bank\n"
-        "• Bengal Commercial, Citizens Bank, Bangladesh Commerce\n\n"
-        "🕌 <b>Islamic Shariah Banks (10):</b>\n"
-        "• Islami Bank Bangladesh (IBBL), Al-Arafah, SIBL, FSIBL\n"
-        "• Shahjalal Islami (SJIBL), EXIM Bank, Union Bank\n"
-        "• Global Islami Bank, ICB Islamic Bank, Standard Bank PLC\n\n"
-        "🌍 <b>Foreign & Digital Banks (11):</b>\n"
-        "• Standard Chartered, HSBC, Woori, Ceylon, SBI, HBL, Alfalah, Citi, NBP\n"
-        "• Nagad Digital Bank, Kori Digital Bank\n\n"
-        "💼 <b>NBFIs (35 Financial Institutions):</b>\n"
-        "• IDLC, IPDC, LankaBangla, DBH, United Finance, IDCOL, BIFC, CVC\n"
-        "• Fareast, FAS, First Finance, GSP, Hajj Finance, IIDFC, ILFSL\n"
-        "• Meridian, MIDAS, National Finance, National Housing, Phoenix\n"
-        "• Premier Leasing, Prime Finance, SABINCO, SFIL, UBICO, Uttara Finance...\n\n"
-        "🌐 <b>Central Recruitment Portals:</b>\n"
-        "• Bangladesh Bank e-Recruitment (BSCS)\n"
-        "• bdjobs.com (Banking & NBFI categories)\n"
-        "• Skill Jobs (Banking category)\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        "<i>All monitored continuously by AI Agent!</i>"
-    )
-    await send_msg(update, context, text)
+# ================================================================
+# AUTONOMOUS 30-MINUTE BACKGROUND MONITORING ENGINE
+# ================================================================
 
+async def periodic_monitoring_task(app: Application):
+    """
+    Continuous 30-minute automated monitoring engine.
+    Scrapes Bangladesh Bank BSCS + all 105+ banks & NBFIs every 30 minutes.
+    Automatically purges expired jobs, deduplicates, runs AI analysis,
+    and broadcasts newly discovered circulars to Telegram!
+    """
+    logger.info("30-minute background monitoring task started.")
+    while True:
+        try:
+            logger.info("[AUTO-MONITOR] Starting scheduled 30-minute scan across ALL 105+ institutions...")
+            # 1. Clean expired and duplicates
+            db.cleanup_expired_jobs()
+            db.cleanup_duplicates()
 
-async def resend_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /resend command — rebroadcast latest valid jobs into chat."""
-    recent_jobs = db.get_recent_jobs(limit=10)
-    if not recent_jobs:
-        await send_msg(update, context, "📭 No jobs available in database to resend. Run <code>/check</code> first!")
-        return
+            # 2. Scrape Bangladesh Bank BSCS e-Recruitment
+            bb_scraper = BBErecruitmentScraper()
+            bb_jobs = await asyncio.to_thread(bb_scraper.scrape_jobs)
+            new_count = 0
+            for j in bb_jobs:
+                if db.insert_job(j) is not None:
+                    new_count += 1
 
-    await send_msg(update, context, f"🔄 <b>Re-broadcasting {len(recent_jobs)} latest job alerts to this chat...</b>")
+            # 3. Scrape ALL 105+ Banks & NBFIs concurrently
+            career_scraper = CareerPageScraper()
+            sources = [b for b in BANKS if b.get("short_name") != "BB_BSCS" and b.get("enabled", True)]
+            bank_jobs = await asyncio.to_thread(career_scraper.scrape_all_concurrent, sources, 15)
+            for j in bank_jobs:
+                if db.insert_job(j) is not None:
+                    new_count += 1
 
-    for job in recent_jobs:
-        card = telegram_notifier.format_job_message(job)
-        await send_msg(update, context, card, disable_preview=False)
-        await asyncio.sleep(0.4)
+            # 4. Immediate post-scrape purge of any expired or duplicate jobs
+            db.cleanup_expired_jobs()
+            db.cleanup_duplicates()
 
-    await send_msg(update, context, "✅ <b>All alerts successfully resent!</b>")
+            logger.info(f"[AUTO-MONITOR] Scan completed: {new_count} new circulars inserted across 105+ sources.")
 
+            # 4. AI Analysis on newly discovered jobs
+            unanalyzed = db.get_unanalyzed_jobs()
+            if unanalyzed:
+                analyzer = JobAnalyzer()
+                results = await asyncio.to_thread(analyzer.analyze_batch, unanalyzed)
+                for j, analysis in results:
+                    if analysis:
+                        db.update_job_ai_analysis(j["id"], analysis)
 
-async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /stats command."""
-    total_jobs = db.get_job_count()
-    scrape_stats = db.get_scrape_stats()
+            # 5. Broadcast new jobs to Telegram chat
+            unnotified = db.get_unnotified_jobs(min_relevance_score=0.4)
+            if unnotified:
+                logger.info(f"[AUTO-MONITOR] Broadcasting {len(unnotified)} new circulars to Telegram...")
+                chat_id = TELEGRAM_CHAT_ID
+                for j in unnotified:
+                    card = telegram_notifier.format_job_message(j)
+                    if chat_id:
+                        await app.bot.send_message(
+                            chat_id=chat_id,
+                            text=card,
+                            parse_mode=ParseMode.HTML,
+                            disable_web_page_preview=False,
+                        )
+                        db.mark_as_notified(j["id"])
+                        await asyncio.sleep(0.5)
 
-    stats_msg = (
-        "📊 <b>BD Bank Job Monitor — Statistics</b>\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"• <b>Total Active Circulars:</b> {total_jobs}\n"
-        f"• <b>Monitored Institutions:</b> {len(BANKS)} Organizations\n"
-        f"• <b>Total Scrape Runs:</b> {scrape_stats.get('total_scrapes', 0)}\n"
-        f"• <b>Successful Scrapes:</b> {scrape_stats.get('successful', 0)}\n"
-        f"• <b>Failed Scrapes:</b> {scrape_stats.get('failed', 0)}\n"
-        f"• <b>New Jobs Discovered:</b> {scrape_stats.get('total_new_jobs', 0)}\n\n"
-        "🤖 <i>Status: Fully Active & Monitoring</i>"
-    )
-    await send_msg(update, context, stats_msg)
+        except Exception as e:
+            logger.error(f"[AUTO-MONITOR] Error during periodic scan: {e}", exc_info=True)
 
-
-async def check_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /check command — on-demand scrape with live progress indication."""
-    chat_id = update.effective_chat.id if update.effective_chat else update.message.chat_id
-    status_msg = await context.bot.send_message(
-        chat_id=chat_id,
-        text="⏳ <b>[1/4]</b> 🏛️ <i>Connecting to Bangladesh Bank Central e-Recruitment (BSCS)...</i>",
-        parse_mode=ParseMode.HTML,
-    )
-
-    try:
-        # Step 1: Bangladesh Bank e-Recruitment
-        bb_scraper = BBErecruitmentScraper()
-        bb_jobs = await asyncio.to_thread(bb_scraper.scrape_jobs)
-        new_bb = 0
-        for j in bb_jobs:
-            if db.insert_job(j) is not None:
-                new_bb += 1
-
-        # Step 2: Bank Career Pages & Portals
-        await status_msg.edit_text(
-            f"⏳ <b>[2/4]</b> 🏦 <i>BB e-Recruitment checked ({len(bb_jobs)} circulars). Scanning 105+ banks & NBFIs...</i>",
-            parse_mode=ParseMode.HTML,
-        )
-
-        career_scraper = CareerPageScraper()
-        sources = [s for s in BANKS if s.get("enabled", True) and s.get("short_name") != "BB_BSCS"]
-        total_career_new = 0
-
-        def scan_career_pages():
-            cnt = 0
-            for s in sources:
-                try:
-                    c_jobs = career_scraper.scrape(s)
-                    for j in c_jobs:
-                        if db.insert_job(j) is not None:
-                            cnt += 1
-                except Exception:
-                    pass
-            return cnt
-
-        total_career_new = await asyncio.to_thread(scan_career_pages)
-
-        # Step 3: AI Analysis
-        total_new = new_bb + total_career_new
-        await status_msg.edit_text(
-            f"⏳ <b>[3/4]</b> 🧠 <i>Scraping complete ({total_new} new jobs found). Running Gemini AI analysis...</i>",
-            parse_mode=ParseMode.HTML,
-        )
-
-        unanalyzed = db.get_unanalyzed_jobs()
-        analyzed_count = 0
-        if unanalyzed:
-            analyzer = JobAnalyzer()
-            results = await asyncio.to_thread(analyzer.analyze_batch, unanalyzed)
-            for j, analysis in results:
-                if analysis:
-                    db.update_job_ai_analysis(j["id"], analysis)
-            analyzed_count = len(results)
-
-        # Step 4: Notifications
-        await status_msg.edit_text(
-            f"⏳ <b>[4/4]</b> 📬 <i>AI analysis complete ({analyzed_count} analyzed). Delivering notifications...</i>",
-            parse_mode=ParseMode.HTML,
-        )
-
-        unnotified = db.get_unnotified_jobs(min_relevance_score=0.4)
-        sent_count = 0
-        for j in unnotified:
-            card = telegram_notifier.format_job_message(j)
-            await send_msg(update, context, card, disable_preview=False)
-            db.mark_as_notified(j["id"])
-            sent_count += 1
-            await asyncio.sleep(0.4)
-
-        summary_text = (
-            f"✅ <b>Live Scan Complete!</b>\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"• 🏛️ <b>Govt Bank Circulars (BB BSCS):</b> {len(bb_jobs)} active\n"
-            f"• 🆕 <b>New Jobs Discovered:</b> {total_new}\n"
-            f"• 🧠 <b>Jobs Analyzed by AI:</b> {analyzed_count}\n"
-            f"• 📢 <b>Notifications Delivered:</b> {sent_count}\n\n"
-            f"👉 Type <code>/latest</code> or <code>/categories</code> to browse anytime!"
-        )
-        await status_msg.edit_text(summary_text, parse_mode=ParseMode.HTML)
-
-    except Exception as e:
-        logger.error(f"Error during on-demand check: {e}", exc_info=True)
-        await status_msg.edit_text(
-            f"❌ <b>Error during scan:</b> <code>{html.escape(str(e)[:250])}</code>",
-            parse_mode=ParseMode.HTML,
-        )
+        logger.info("[AUTO-MONITOR] Next automated scan in 30 minutes (1800s)...")
+        await asyncio.sleep(1800)  # Exactly 30 minutes
 
 
 async def setup_bot_commands(application: Application):
     """Register menu commands with Telegram API."""
     commands = [
-        BotCommand("latest", "Show 5 most recent bank jobs"),
+        BotCommand("fetchall", "Deliver ALL active circulars (chat recovery)"),
+        BotCommand("latest", "Show 5 most recent bank circulars"),
         BotCommand("categories", "One-tap category browser with live counts"),
         BotCommand("search", "Instant search or quick-search chips"),
-        BotCommand("all", "Browse all circulars with interactive next/prev buttons"),
-        BotCommand("filter", "Filter by sector or cadre"),
+        BotCommand("scan", "Live scan now with 4-step progress updates"),
         BotCommand("banks", "List all 105+ monitored banks & NBFIs"),
-        BotCommand("check", "Run instant scrape with progress indicator"),
         BotCommand("stats", "View database & monitoring statistics"),
-        BotCommand("resend", "Re-broadcast latest job alerts to chat"),
         BotCommand("help", "Show help and command guide"),
     ]
     try:
         await application.bot.set_my_commands(commands)
-        logger.info("Registered bot commands menu with Telegram.")
+        logger.info("Registered deduplicated bot commands menu with Telegram.")
     except Exception as e:
         logger.warning(f"Failed to set bot commands: {e}")
 
 
+async def post_init(application: Application):
+    """Post initialization: set commands and launch 30-minute background monitor."""
+    await setup_bot_commands(application)
+    asyncio.create_task(periodic_monitoring_task(application))
+
+
 def main():
-    """Start interactive Telegram bot server."""
+    """Start interactive Telegram bot server with 30-minute background monitoring."""
     try:
         asyncio.get_event_loop()
     except RuntimeError:
@@ -673,24 +648,25 @@ def main():
         Application.builder()
         .token(TELEGRAM_BOT_TOKEN)
         .concurrent_updates(True)
-        .post_init(setup_bot_commands)
+        .post_init(post_init)
         .build()
     )
 
-    # Command handlers
+    # Deduplicated, intuitive command handlers
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler("help", help_command))
+    app.add_handler(CommandHandler("fetchall", fetchall_command))
+    app.add_handler(CommandHandler("fetch_all", fetchall_command))
+    app.add_handler(CommandHandler("resend_all", fetchall_command))
+    app.add_handler(CommandHandler("all", fetchall_command))
+    app.add_handler(CommandHandler("latest", latest_command))
     app.add_handler(CommandHandler("categories", categories_command))
     app.add_handler(CommandHandler("category", categories_command))
-    app.add_handler(CommandHandler("latest", latest_command))
-    app.add_handler(CommandHandler("all", all_command))
-    app.add_handler(CommandHandler("jobs", all_command))
     app.add_handler(CommandHandler("search", search_command))
-    app.add_handler(CommandHandler("filter", filter_command))
+    app.add_handler(CommandHandler("scan", scan_command))
+    app.add_handler(CommandHandler("check", scan_command))
     app.add_handler(CommandHandler("banks", banks_command))
-    app.add_handler(CommandHandler("resend", resend_command))
     app.add_handler(CommandHandler("stats", stats_command))
-    app.add_handler(CommandHandler("check", check_command))
 
     # Interactive callback query handler (inline buttons click)
     app.add_handler(CallbackQueryHandler(handle_callback_query))
@@ -698,7 +674,7 @@ def main():
     # Natural text message handler (search any keyword without typing slashes)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_message))
 
-    print("✅ Bot is online with interactive categories, quick search chips & pagination buttons!")
+    print("✅ Bot is online with /fetchall, 30-min auto-monitor across ALL 105+ banks!")
     app.run_polling(poll_interval=0.5, timeout=10, drop_pending_updates=True)
 
 

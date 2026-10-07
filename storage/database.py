@@ -147,23 +147,23 @@ class Database:
         permanently blacklists them in expired_jobs, and deletes them from active jobs.
         Returns the number of expired jobs removed.
         """
-        from utils.date_parser import is_deadline_passed, parse_deadline
+        from utils.date_parser import is_job_expired, parse_deadline
         conn = self._get_connection()
         removed_count = 0
         try:
-            cursor = conn.execute("SELECT id, title, organization, url, deadline FROM jobs")
+            cursor = conn.execute("SELECT id, title, organization, url, deadline, description FROM jobs")
             rows = cursor.fetchall()
             for r in rows:
-                deadline = r["deadline"]
-                parsed_dl = parse_deadline(deadline) or parse_deadline(r["title"])
-                if parsed_dl and is_deadline_passed(str(parsed_dl)):
+                job_dict = dict(r)
+                if is_job_expired(job_dict):
+                    dl = r["deadline"] or str(parse_deadline(r["title"])) or "Expired"
                     conn.execute("""
                         INSERT OR IGNORE INTO expired_jobs (url, title, organization, deadline)
                         VALUES (?, ?, ?, ?)
-                    """, (r["url"], r["title"], r["organization"], str(parsed_dl)))
+                    """, (r["url"], r["title"], r["organization"], str(dl)))
                     conn.execute("DELETE FROM jobs WHERE id = ?", (r["id"],))
                     removed_count += 1
-                    logger.info(f"Smart-deleted expired job [ID={r['id']}]: {r['title']} (Deadline: {parsed_dl})")
+                    logger.info(f"Smart-deleted expired job [ID={r['id']}]: {r['title']} (Deadline: {dl})")
 
             if removed_count > 0:
                 conn.commit()
@@ -241,7 +241,7 @@ class Database:
         Returns job ID if inserted, None otherwise.
         """
         from utils.deduplicator import generate_job_fingerprint, are_jobs_duplicate
-        from utils.date_parser import is_deadline_passed, parse_deadline
+        from utils.date_parser import is_job_expired, parse_deadline
 
         url = (job_data.get("url") or "").strip()
         title = job_data.get("title", "Unknown")
@@ -258,9 +258,9 @@ class Database:
 
         # 2. Automated deadline check: if already passed, never add it!
         parsed_dl = parse_deadline(deadline) or parse_deadline(title)
-        if parsed_dl and is_deadline_passed(str(parsed_dl)):
-            self.blacklist_expired_job(url=url, title=title, organization=org, deadline=str(parsed_dl))
-            logger.info(f"Automated rejection: deadline expired for '{title}' (Deadline: {parsed_dl}). Blacklisted.")
+        if is_job_expired(job_data):
+            self.blacklist_expired_job(url=url, title=title, organization=org, deadline=str(parsed_dl) if parsed_dl else "Expired")
+            logger.info(f"Automated rejection: deadline expired for '{title}'. Blacklisted.")
             return None
 
         # 3. Automated duplicate check (Cross-source & fuzzy matching)

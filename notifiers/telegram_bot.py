@@ -237,8 +237,10 @@ class TelegramNotifier:
         if not self.is_configured:
             logger.warning("Telegram not configured, skipping notification.")
             return False
-
         import requests
+        import time
+        import re
+
         url = f"https://api.telegram.org/bot{self.bot_token}/sendMessage"
         payload = {
             "chat_id": self.chat_id,
@@ -247,24 +249,34 @@ class TelegramNotifier:
             "disable_web_page_preview": False,
         }
 
-        try:
-            resp = requests.post(url, json=payload, timeout=15)
-            data = resp.json()
-            if data.get("ok"):
-                return True
-            else:
+        for attempt in range(3):
+            try:
+                resp = requests.post(url, json=payload, timeout=15)
+                data = resp.json()
+                if data.get("ok"):
+                    return True
+
+                # Rate limit handling (429 Flood Control)
+                if data.get("error_code") == 429 or "retry after" in str(data.get("description", "")).lower():
+                    retry_sec = data.get("parameters", {}).get("retry_after", 5)
+                    logger.warning(f"Telegram rate limit (429). Sleeping {retry_sec} seconds before retry...")
+                    time.sleep(retry_sec + 1)
+                    continue
+
                 logger.error(f"Telegram API error: {data.get('description')}")
-                import re
-                plain_text = re.sub(r'<[^>]+>', '', text)
-                fallback_payload = {
-                    "chat_id": self.chat_id,
-                    "text": plain_text,
-                }
-                fb_resp = requests.post(url, json=fallback_payload, timeout=15)
-                return fb_resp.json().get("ok", False)
-        except Exception as e:
-            logger.error(f"Failed to send Telegram message: {e}")
-            return False
+                if "can't parse entities" in str(data.get("description", "")).lower():
+                    plain_text = re.sub(r'<[^>]+>', '', text)
+                    fb_resp = requests.post(
+                        url,
+                        json={"chat_id": self.chat_id, "text": plain_text},
+                        timeout=15,
+                    )
+                    return fb_resp.json().get("ok", False)
+                return False
+            except Exception as e:
+                logger.error(f"Failed to send Telegram message: {e}")
+                time.sleep(1)
+        return False
 
     def notify_job(self, job: dict) -> bool:
         """Send a notification for a single job."""

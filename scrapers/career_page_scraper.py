@@ -33,7 +33,8 @@ class CareerPageScraper(BaseScraper):
     STRICT_EXCLUDE_KEYWORDS = [
         # Governance & Management
         "board of director", "board of directors", "board member",
-        "managing director & ceo", "managing director's", "md & ceo", "md's speech",
+        "managing director", "chief executive officer", "managing director & ceo",
+        "managing director's", "md & ceo", "md's speech",
         "chairman", "chairman's message", "vice chairman", "executive committee",
         "audit committee", "risk management committee", "nomination and remuneration",
         "shariah supervisory", "shariah council", "independent director",
@@ -52,7 +53,17 @@ class CareerPageScraper(BaseScraper):
         "information officer", "information officers", "designated officer", "rti officer",
         "grs officer", "grievance redress", "focal point officer", "focal point",
         "complaint officer", "right to information", "তথ্য কর্মকর্তা", "দায়িত্বপ্রাপ্ত কর্মকর্তা",
-        "অভিযোগ প্রতিকার", "সেবা প্রদান প্রতিশ্রুতি",
+        "অভিযোগ প্রতিকার", "সেবা প্রদান প্রতিশ্রুতি", "অভিযোগ নিষ্পত্তি কর্মকর্তা", "আপিল কর্মকর্তা",
+        "আপিল কর্মকর্তাগণ", "information right officer", "auditor and legal advisor",
+        "talk to an advisor", "talk to us", "lead generation", "agent lead generation",
+        # Exam results, appointment letters, past recruitment results
+        "selected candidate", "selected candidates", "appointment letter", "joining date",
+        "written test result", "viva-voce", "viva voce", "admit card", "seat plan",
+        "exam result", "recruitment result", "final result", "shortlisted candidates",
+        "চূড়ান্ত ফলাফল", "লিখিত পরীক্ষার ফলাফল", "মৌখিক পরীক্ষা", "নিয়োগের ফলাফল",
+        # Banking products & loans
+        "loan against", "loan product", "credit card", "deposit scheme", "pension vata",
+        "নিরাপদ অর্জন", "পদ্মা মৌসুম", "পদ্মাবতী", "সঞ্চয় প্রকল্প", "আমানত",
         # Generic buttons/headings that are not specific job titles
         "career", "careers", "career opportunity", "career opportunities",
         "current opening", "current openings", "current vacancies", "vacancies",
@@ -63,6 +74,8 @@ class CareerPageScraper(BaseScraper):
 
     def parse(self, html: str, source_config: dict) -> list:
         """Parse career page HTML and extract genuine job postings."""
+        from utils.date_parser import is_job_expired
+
         soup = BeautifulSoup(html, "html.parser")
         base_url = source_config.get("career_url", "")
         org_name = source_config.get("name", "Unknown")
@@ -88,6 +101,11 @@ class CareerPageScraper(BaseScraper):
             clean_url = job["url"].strip()
 
             if clean_url in seen_urls or clean_title in seen_titles:
+                continue
+
+            # Drop expired postings right at scrape time
+            if is_job_expired(job):
+                logger.info(f"Dropped expired job at scrape time: '{job['title']}' @ {job['organization']}")
                 continue
 
             seen_urls.add(clean_url)
@@ -336,3 +354,30 @@ class CareerPageScraper(BaseScraper):
         text = re.sub(r'[\r\n\t]+', ' ', text)
         text = re.sub(r'\s{2,}', ' ', text)
         return text.strip()
+
+    def scrape_all_concurrent(self, sources: list, max_workers: int = 15) -> list:
+        """
+        Scrape all bank and financial institution career pages in parallel.
+        Processes 100+ institutions in under 15-20 seconds.
+        """
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        all_jobs = []
+
+        def _scrape_single(cfg):
+            try:
+                return self.scrape(cfg)
+            except Exception as e:
+                logger.debug(f"Error scraping {cfg.get('name')}: {e}")
+                return []
+
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {executor.submit(_scrape_single, s): s for s in sources}
+            for fut in as_completed(futures):
+                try:
+                    res = fut.result()
+                    if res:
+                        all_jobs.extend(res)
+                except Exception:
+                    pass
+
+        return all_jobs
