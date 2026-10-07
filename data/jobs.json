@@ -1,10 +1,10 @@
 {
-  "generated_at": "2026-10-07T19:36:29.616185",
+  "generated_at": "2026-10-07T19:38:31.098656",
   "today": "2026-10-07",
   "total_active_jobs": 19,
   "total_monitored_institutions": 105,
   "monitoring_frequency": "Every 30 Minutes",
-  "bot_access_mode": "private",
+  "bot_access_mode": "public",
   "jobs": [
     {
       "id": 19,
