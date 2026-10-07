@@ -60,14 +60,25 @@
     initTheme();
     setupEventListeners();
     await loadData();
+
+    // Auto-poll every 20 seconds so admin changes in Telegram reflect live without manual reload
+    setInterval(loadData, 20000);
+
+    // Re-check immediately whenever user switches back to this tab
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') {
+        loadData();
+      }
+    });
   }
 
   /**
-   * Load JSON Data (with fallback handling)
+   * Load JSON Data (with cache-busting & live sync)
    */
   async function loadData() {
     try {
-      const response = await fetch('data/jobs.json');
+      const cacheBuster = `?_ts=${Date.now()}`;
+      const response = await fetch(`data/jobs.json${cacheBuster}`, { cache: 'no-store' });
       if (!response.ok) throw new Error('Network error');
       const data = await response.json();
 

@@ -24,6 +24,8 @@ import io
 import html
 import asyncio
 import logging
+import subprocess
+import threading
 from datetime import datetime
 from telegram import (
     Update,
@@ -63,6 +65,31 @@ from notifiers.telegram_bot import TelegramNotifier
 
 db = Database()
 telegram_notifier = TelegramNotifier()
+
+
+def sync_website_data(commit_message: str = "chore(sync): update jobs and access mode"):
+    """
+    Export fresh data/jobs.json and auto-push to GitHub in the background
+    so GitHub Pages immediately reflects the live status without manual intervention.
+    """
+    try:
+        import export_web_data
+        export_web_data.export_all()
+
+        def _push_worker():
+            try:
+                subprocess.run(["git", "add", "data/jobs.json"], capture_output=True, text=True, check=True)
+                diff_check = subprocess.run(["git", "diff", "--staged", "--name-only"], capture_output=True, text=True)
+                if "data/jobs.json" in diff_check.stdout:
+                    subprocess.run(["git", "commit", "-m", commit_message], capture_output=True, text=True, check=True)
+                    subprocess.run(["git", "push", "origin", "master"], capture_output=True, text=True, check=True)
+                    logger.info(f"✅ Auto-synced jobs.json to GitHub Pages: {commit_message}")
+            except Exception as push_err:
+                logger.warning(f"Background git push skipped or error: {push_err}")
+
+        threading.Thread(target=_push_worker, daemon=True).start()
+    except Exception as err:
+        logger.error(f"Error in sync_website_data: {err}")
 
 
 def get_category_keyboard() -> InlineKeyboardMarkup:
@@ -646,11 +673,7 @@ async def mode_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if new_mode:
             db.set_access_mode(new_mode)
-            try:
-                import export_web_data
-                export_web_data.export_all()
-            except Exception as e:
-                logger.error(f"Error updating jobs.json: {e}")
+            sync_website_data(f"chore(mode): set 1-on-1 bot access mode to {new_mode}")
 
             status_text = (
                 "🌐 <b>PUBLIC MODE ACTIVATED</b>\n"
@@ -933,11 +956,7 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
             return
 
         db.set_access_mode(new_mode)
-        try:
-            import export_web_data
-            export_web_data.export_all()
-        except Exception as e:
-            logger.error(f"Error updating jobs.json after mode change: {e}")
+        sync_website_data(f"chore(mode): set 1-on-1 bot access mode to {new_mode}")
 
         await query.answer(f"✅ 1-on-1 Bot Mode set to {new_mode.upper()}!", show_alert=True)
 
