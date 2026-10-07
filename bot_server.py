@@ -30,6 +30,9 @@ from datetime import datetime
 from telegram import (
     Update,
     BotCommand,
+    BotCommandScopeDefault,
+    BotCommandScopeChat,
+    BotCommandScopeAllGroupChats,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
 )
@@ -55,7 +58,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger("bot_server")
 
-from config.settings import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
+from config.settings import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, TELEGRAM_OWNER_ID
 from config.banks import BANKS, ALL_SOURCES
 from storage.database import Database
 from scrapers.bb_erecruitment_scraper import BBErecruitmentScraper
@@ -65,6 +68,47 @@ from notifiers.telegram_bot import TelegramNotifier
 
 db = Database()
 telegram_notifier = TelegramNotifier()
+
+
+def get_guest_commands() -> list[BotCommand]:
+    """Commands visible only to non-approved guests/members."""
+    return [
+        BotCommand("start", "Start bot & welcome menu"),
+        BotCommand("requestaccess", "Request 1-on-1 bot usage or group invite"),
+        BotCommand("help", "Help guide & instructions"),
+    ]
+
+
+def get_member_commands() -> list[BotCommand]:
+    """Commands visible to approved members and group participants (no /mode, /requests, /requestaccess)."""
+    return [
+        BotCommand("start", "Start bot & interactive menu"),
+        BotCommand("fetchall", "Deliver ALL active circulars (chat recovery)"),
+        BotCommand("latest", "5 most recent verified circulars"),
+        BotCommand("categories", "One-tap category browser with live counts"),
+        BotCommand("search", "Instant position search"),
+        BotCommand("scan", "Live scan across 105+ sources"),
+        BotCommand("banks", "List all 105+ monitored institutions"),
+        BotCommand("stats", "Database & monitoring metrics"),
+        BotCommand("help", "Bot command guide"),
+    ]
+
+
+def get_owner_commands() -> list[BotCommand]:
+    """Commands visible exclusively to the Bot Owner (all commands including /mode and /requests)."""
+    return [
+        BotCommand("start", "Start bot & interactive menu"),
+        BotCommand("mode", "Owner: Toggle 1-on-1 Bot Public / Private"),
+        BotCommand("requests", "Owner: Review & approve access requests"),
+        BotCommand("fetchall", "Deliver ALL active circulars (chat recovery)"),
+        BotCommand("latest", "5 most recent verified circulars"),
+        BotCommand("categories", "One-tap category browser with live counts"),
+        BotCommand("search", "Instant position search"),
+        BotCommand("scan", "Live scan across 105+ sources"),
+        BotCommand("banks", "List all 105+ monitored institutions"),
+        BotCommand("stats", "Database & monitoring metrics"),
+        BotCommand("help", "Owner command guide"),
+    ]
 
 
 def sync_website_data(commit_message: str = "chore(sync): update jobs and access mode"):
@@ -172,12 +216,42 @@ async def send_msg(
         return None
 
 
-async def is_admin(user_id: str, context: ContextTypes.DEFAULT_TYPE = None) -> bool:
-    """Check if user_id is an administrator."""
+async def is_owner(user_id: str, context: ContextTypes.DEFAULT_TYPE = None) -> bool:
+    """
+    Check if user_id is the bot owner (creator).
+    Only the owner can view/execute /mode, /requests, or approve/reject access requests.
+    """
     if not user_id:
         return False
-    user_str = str(user_id)
-    
+    user_str = str(user_id).strip()
+
+    # 1. Matches TELEGRAM_OWNER_ID config
+    owner_conf = str(TELEGRAM_OWNER_ID).strip()
+    if owner_conf and user_str == owner_conf:
+        return True
+
+    # 2. Telegram group creator check
+    if context and TELEGRAM_CHAT_ID:
+        try:
+            admins = await context.bot.get_chat_administrators(int(TELEGRAM_CHAT_ID))
+            for a in admins:
+                if a.status == "creator" and str(a.user.id) == user_str:
+                    return True
+        except Exception:
+            pass
+
+    return False
+
+
+async def is_admin(user_id: str, context: ContextTypes.DEFAULT_TYPE = None) -> bool:
+    """Check if user_id is an administrator or owner."""
+    if not user_id:
+        return False
+    user_str = str(user_id).strip()
+
+    if await is_owner(user_str, context):
+        return True
+
     # 1. Environment variable TELEGRAM_ADMIN_IDS
     admin_env = os.getenv("TELEGRAM_ADMIN_IDS", "")
     admin_set = {aid.strip() for aid in admin_env.split(",") if aid.strip()}
@@ -214,6 +288,7 @@ def is_authorized(update: Update) -> bool:
     Check if update is authorized based on current mode and approval status.
     - Groups: ONLY the official TELEGRAM_CHAT_ID group is allowed. All other groups are blocked.
     - 1-on-1 DMs:
+      - Owner: always authorized.
       - If in PUBLIC mode: all users can query.
       - If in PRIVATE mode: requires approved bot usage or admin.
     """
@@ -227,6 +302,10 @@ def is_authorized(update: Update) -> bool:
     # Group chats: strictly restricted to official group only under all circumstances
     if chat_type in ["group", "supergroup"]:
         return chat_id == str(TELEGRAM_CHAT_ID)
+
+    # Owner is always authorized
+    if user_id and str(user_id).strip() == str(TELEGRAM_OWNER_ID).strip():
+        return True
 
     # 1-on-1 Private DMs:
     mode = db.get_access_mode()
@@ -342,22 +421,42 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /help command with clear, deduplicated guide."""
-    if not await enforce_private_access(update, context):
+    """Handle /help command with role-tailored guide."""
+    user_id = str(update.effective_user.id) if update.effective_user else ""
+    is_user_owner = await is_owner(user_id, context)
+
+    # For non-approved guests in private chat
+    if not is_authorized(update) and not is_user_owner:
+        guest_help = (
+            "📋 <b>BD Bank Jobs AI — Guest Guide:</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "• <code>/start</code> — Welcome menu & access overview\n"
+            "• <code>/requestaccess</code> — Request 1-on-1 bot usage or private group invite\n\n"
+            "<i>To unlock full query commands (/latest, /fetchall, /categories, /search), submit a request using <code>/requestaccess</code>.</i>"
+        )
+        await send_msg(update, context, guest_help)
         return
 
     help_text = (
         "📋 <b>Bot Commands Guide:</b>\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        "• /fetchall — <b>Retrieve and deliver ALL circulars</b> from database (use anytime if you deleted chat!)\n"
-        "• /latest — Show 5 most recent verified banking circulars\n"
-        "• /categories — One-tap category browser with live counts\n"
-        "• /search [keyword] — Instant search or one-click search chips\n"
-        "• /scan — Trigger live scan now across all 105+ institutions with progress updates\n"
-        "• /banks — View complete directory of 105+ monitored institutions\n"
-        "• /stats — View database and monitoring metrics\n\n"
+        "• <code>/fetchall</code> — <b>Retrieve and deliver ALL circulars</b> from database (use anytime if you deleted chat!)\n"
+        "• <code>/latest</code> — Show 5 most recent verified banking circulars\n"
+        "• <code>/categories</code> — One-tap category browser with live counts\n"
+        "• <code>/search [keyword]</code> — Instant search or one-click search chips\n"
+        "• <code>/scan</code> — Trigger live scan now across all 105+ institutions with progress updates\n"
+        "• <code>/banks</code> — View complete directory of 105+ monitored institutions\n"
+        "• <code>/stats</code> — View database and monitoring metrics\n\n"
         "💡 <b>Tip:</b> You can also type any keyword directly in chat (e.g., <i>'civil engineer'</i>, <i>'sonali bank'</i>, <i>'audit'</i>) to search immediately!"
     )
+
+    if is_user_owner:
+        help_text += (
+            "\n\n👑 <b>Owner Controls (Exclusive):</b>\n"
+            "• <code>/mode [public|private]</code> — Toggle 1-on-1 Bot access mode & sync website\n"
+            "• <code>/requests</code> — Review & approve/reject pending access requests"
+        )
+
     await send_msg(update, context, help_text, reply_markup=get_category_keyboard())
 
 
@@ -656,10 +755,10 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def mode_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Admin command to view and toggle 1-on-1 Bot Usage between PUBLIC and PRIVATE mode."""
+    """Owner command to view and toggle 1-on-1 Bot Usage between PUBLIC and PRIVATE mode."""
     user_id = str(update.effective_user.id) if update.effective_user else ""
-    if not await is_admin(user_id, context):
-        await send_msg(update, context, "⛔ Only administrators can configure bot privacy mode.")
+    if not await is_owner(user_id, context):
+        await send_msg(update, context, "⛔ <b>Access Denied:</b> The <code>/mode</code> command is restricted exclusively to the bot owner.")
         return
 
     # Check for direct argument: /mode public or /mode private
@@ -712,10 +811,10 @@ async def mode_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def requests_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Admin command to view and review pending access requests."""
+    """Owner command to view and review pending access requests."""
     user_id = str(update.effective_user.id) if update.effective_user else ""
-    if not await is_admin(user_id, context):
-        await send_msg(update, context, "⛔ Only administrators can view access requests.")
+    if not await is_owner(user_id, context):
+        await send_msg(update, context, "⛔ <b>Access Denied:</b> The <code>/requests</code> command is restricted exclusively to the bot owner.")
         return
 
     pending = db.list_authorized_users(status="pending")
@@ -748,10 +847,16 @@ async def requests_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def request_access_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Bring up the access request menu for unauthorized users."""
+    """Bring up the access request menu for unauthorized / non-approved members."""
     user_id = str(update.effective_user.id) if update.effective_user else ""
-    if db.is_user_authorized(user_id) or str(update.effective_chat.id) == str(TELEGRAM_CHAT_ID):
-        await send_msg(update, context, "✅ You already have authorized access to the BD Bank Jobs AI Bot!")
+    chat_id = str(update.effective_chat.id) if update.effective_chat else ""
+
+    if await is_owner(user_id, context):
+        await send_msg(update, context, "👑 <b>Bot Owner:</b> You have full root access to all bot features and commands.")
+        return
+
+    if db.is_user_authorized(user_id) or chat_id == str(TELEGRAM_CHAT_ID):
+        await send_msg(update, context, "✅ <b>You already have authorized access</b> to BD Bank Jobs AI. You do not need to request access.")
         return
 
     prompt = (
@@ -760,7 +865,7 @@ async def request_access_command(update: Update, context: ContextTypes.DEFAULT_T
         "Choose the type of access you are requesting:\n\n"
         "• <b>🤖 Bot Usage Permission:</b> Direct access to query the bot in 1-on-1 private chat.\n"
         "• <b>👥 Private Group Invite:</b> Join the official Telegram group for automatic 30-min broadcasts.\n\n"
-        "<i>Tap below to submit your request to the administrator:</i>"
+        "<i>Tap below to submit your request to the bot owner:</i>"
     )
     await send_msg(update, context, prompt, reply_markup=get_access_request_keyboard())
 
@@ -849,11 +954,20 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
         admin_user = query.from_user
         admin_uid = str(admin_user.id)
 
-        if not await is_admin(admin_uid, context):
-            await query.answer("⛔ Only administrators can approve access requests.", show_alert=True)
+        if not await is_owner(admin_uid, context):
+            await query.answer("⛔ Access Denied: Only the bot owner can approve access requests.", show_alert=True)
             return
 
         db.authorize_user(target_uid, access_type=req_type, approved_by=admin_uid)
+
+        # Update command visibility scope for the approved user immediately (removes /requestaccess, adds member queries)
+        try:
+            await context.bot.set_my_commands(
+                get_member_commands(),
+                scope=BotCommandScopeChat(chat_id=int(target_uid)),
+            )
+        except Exception as scope_err:
+            logger.warning(f"Failed to update scoped commands for user {target_uid}: {scope_err}")
         admin_tag = f"@{admin_user.username}" if admin_user.username else admin_user.first_name
 
         if req_type == "bot":
@@ -918,8 +1032,8 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
         admin_user = query.from_user
         admin_uid = str(admin_user.id)
 
-        if not await is_admin(admin_uid, context):
-            await query.answer("⛔ Only administrators can reject access requests.", show_alert=True)
+        if not await is_owner(admin_uid, context):
+            await query.answer("⛔ Access Denied: Only the bot owner can reject access requests.", show_alert=True)
             return
 
         db.reject_user(target_uid, rejected_by=admin_uid)
@@ -951,8 +1065,8 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
     if data.startswith("set_mode:"):
         new_mode = data.split(":", 1)[1]
         admin_uid = str(query.from_user.id)
-        if not await is_admin(admin_uid, context):
-            await query.answer("⛔ Only administrators can change bot access mode.", show_alert=True)
+        if not await is_owner(admin_uid, context):
+            await query.answer("⛔ Access Denied: Only the bot owner can change bot access mode.", show_alert=True)
             return
 
         db.set_access_mode(new_mode)
@@ -1139,25 +1253,31 @@ async def periodic_monitoring_task(app: Application):
 
 
 async def setup_bot_commands(application: Application):
-    """Register menu commands with Telegram API."""
-    commands = [
-        BotCommand("fetchall", "Deliver ALL active circulars (chat recovery)"),
-        BotCommand("latest", "Show 5 most recent bank circulars"),
-        BotCommand("categories", "One-tap category browser with live counts"),
-        BotCommand("search", "Instant search or quick-search chips"),
-        BotCommand("scan", "Live scan now with 4-step progress updates"),
-        BotCommand("banks", "List all 105+ monitored banks & NBFIs"),
-        BotCommand("stats", "View database & monitoring statistics"),
-        BotCommand("requestaccess", "Request bot usage or group invite"),
-        BotCommand("mode", "Admin: Toggle public / private access mode"),
-        BotCommand("requests", "Admin: View & approve pending access requests"),
-        BotCommand("help", "Show help and command guide"),
-    ]
+    """Register menu commands with Telegram API using role-based visibility scopes."""
     try:
-        await application.bot.set_my_commands(commands)
-        logger.info("Registered deduplicated bot commands menu with Telegram.")
+        # 1. Default Scope (Guests / Non-approved users): ONLY see /start, /requestaccess, /help
+        await application.bot.set_my_commands(get_guest_commands(), scope=BotCommandScopeDefault())
+
+        # 2. Group Chats Scope (All group members): see member commands (NO /mode, /requests, /requestaccess)
+        await application.bot.set_my_commands(get_member_commands(), scope=BotCommandScopeAllGroupChats())
+
+        # 3. Owner Private Chat Scope: see ALL commands including /mode and /requests
+        owner_id = int(str(TELEGRAM_OWNER_ID).strip())
+        await application.bot.set_my_commands(get_owner_commands(), scope=BotCommandScopeChat(chat_id=owner_id))
+
+        # 4. Approved 1-on-1 Members: set member commands in their DM (NO /mode, /requests, /requestaccess)
+        approved_users = db.list_authorized_users(status="approved")
+        for u in approved_users:
+            uid = u.get("user_id")
+            if uid and str(uid).strip() != str(owner_id).strip():
+                try:
+                    await application.bot.set_my_commands(get_member_commands(), scope=BotCommandScopeChat(chat_id=int(uid)))
+                except Exception:
+                    pass
+
+        logger.info("Configured role-based command visibility scopes in Telegram.")
     except Exception as e:
-        logger.warning(f"Failed to set bot commands: {e}")
+        logger.warning(f"Failed to set scoped bot commands: {e}")
 
 
 async def post_init(application: Application):
