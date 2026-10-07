@@ -571,6 +571,13 @@ async def periodic_monitoring_task(app: Application):
             db.cleanup_expired_jobs()
             db.cleanup_duplicates()
 
+            # Sync static web data for GitHub Pages
+            try:
+                from export_web_data import export_all
+                export_all()
+            except Exception as ex:
+                logger.warning(f"Failed to export web data: {ex}")
+
             logger.info(f"[AUTO-MONITOR] Scan completed: {new_count} new circulars inserted across 105+ sources.")
 
             # 4. AI Analysis on newly discovered jobs
